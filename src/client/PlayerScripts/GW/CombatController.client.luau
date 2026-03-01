@@ -14,6 +14,7 @@ local nextShotAt = 0
 local shootRequested = false
 local fireInterval = 0
 local NO_CAMERA_BACKOFF = 1 / 60
+local shotSequence = 0
 
 local localAmmo = {
 	initialized = false,
@@ -50,6 +51,21 @@ local function getAimRay()
 	return ray.Origin, ray.Direction
 end
 
+local function getLocalClaim(origin: Vector3, dir: Vector3): (string?, Vector3?)
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.IgnoreWater = true
+	local char = player.Character
+	params.FilterDescendantsInstances = char and {char} or {}
+
+	local result = workspace:Raycast(origin, dir.Unit * 2000, params)
+	if not result then
+		return nil, nil
+	end
+
+	return result.Instance.Name, result.Position
+end
+
 local function isTyping()
 	return UIS:GetFocusedTextBox() ~= nil
 end
@@ -67,12 +83,19 @@ local function tryShoot(): "ok" | "blocked_reload" | "blocked_ammo" | "no_camera
 
 	-- predicción local de ammo para UI feel
 	localAmmo.mag -= 1
+	shotSequence += 1
+	local shotId = string.format("%d-%d", player.UserId, shotSequence)
+	local claimedHitPart, claimedHitPosition = getLocalClaim(origin, dir)
 
 	Net.CombatRequest:FireServer({
 		action = "Shoot",
 		weaponId = localAmmo.weaponId,
+		shotId = shotId,
+		clientShotTime = os.clock(),
 		origin = origin,
 		direction = dir,
+		claimedHitPart = claimedHitPart,
+		claimedHitPosition = claimedHitPosition,
 	})
 
 	return "ok"

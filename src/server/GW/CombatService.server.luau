@@ -18,6 +18,7 @@ local lastShotAt: {[Player]: {[string]: number}} = {}
 local ammoByPlayer: {[Player]: {[string]: AmmoState}} = {}
 local ammoHandshakeByPlayer: {[Player]: {[string]: boolean}} = {}
 local deathLock = setmetatable({}, {__mode="k"}) :: {[Humanoid]: number}
+local rejectionCountByReason: {[string]: number} = {}
 
 local function getAlive(player: Player): (Model?, Humanoid?, BasePart?)
 	local char = player.Character
@@ -118,6 +119,83 @@ local function findMuzzle(char: Model, weaponCfg: any): Attachment?
 	return nil
 end
 
+local function logRejection(player: Player, reason: string, payload: any)
+	rejectionCountByReason[reason] = (rejectionCountByReason[reason] or 0) + 1
+	local shotId = if type(payload) == "table" and type(payload.shotId) == "string" then payload.shotId else "n/a"
+	warn(string.format(
+		"[GW][CombatReject] player=%s userId=%d shotId=%s reason=%s count=%d",
+		player.Name,
+		player.UserId,
+		shotId,
+		reason,
+		rejectionCountByReason[reason]
+	))
+end
+
+local function distPointToRay(point: Vector3, origin: Vector3, dirUnit: Vector3): number
+	local t = math.max(0, (point - origin):Dot(dirUnit))
+	local closest = origin + dirUnit * t
+	return (point - closest).Magnitude
+end
+
+local function validateClaimedHit(player: Player, payload: any, char: Model, hrp: BasePart, weaponId: string, weaponCfg: any): (boolean, string?, Vector3?, Vector3?, RaycastResult?)
+	local fire = weaponCfg.fire or {}
+	local rpm = tonumber(fire.rpm) or 420
+	if not canShoot(player, weaponId, rpm) then
+		return false, "cadence_rpm"
+	end
+
+	local netCfg = weaponCfg.net or {}
+	local range = tonumber(weaponCfg.hitscan and weaponCfg.hitscan.range) or 800
+	local originMax = tonumber(netCfg.originMaxOffsetFromHead) or 20
+	local origin = sanitizeOrigin(payload.origin, char, hrp, originMax)
+	if not origin then
+		return false, "origin_invalid"
+	end
+
+	local rawDir = payload.direction
+	if typeof(rawDir) ~= "Vector3" then
+		return false, "dir_invalid_type"
+	end
+	local rawMagnitude = rawDir.Magnitude
+	if rawMagnitude < 0.001 or rawMagnitude > 10_000 then
+		return false, "dir_invalid_magnitude"
+	end
+
+	local dir = sanitizeDir(rawDir)
+	if not dir then
+		return false, "dir_invalid"
+	end
+
+	local claimedHitPosition = payload.claimedHitPosition
+	if claimedHitPosition ~= nil then
+		if typeof(claimedHitPosition) ~= "Vector3" then
+			return false, "claimed_hit_invalid_type"
+		end
+		if (claimedHitPosition - origin).Magnitude > (range + 16) then
+			return false, "claimed_hit_too_far"
+		end
+		local lineTolerance = tonumber(netCfg.claimedHitLineTolerance) or 8
+		if distPointToRay(claimedHitPosition, origin, dir) > lineTolerance then
+			return false, "claimed_hit_offline"
+		end
+	end
+
+	local result = RaycastUtil.hitscan({char}, origin, dir, range)
+	if claimedHitPosition and result then
+		local reconTolerance = tonumber(netCfg.recastHitPosTolerance) or 12
+		if (claimedHitPosition - result.Position).Magnitude > reconTolerance then
+			return false, "recast_mismatch"
+		end
+	end
+
+	if claimedHitPosition and not result then
+		return false, "claimed_hit_without_geometry"
+	end
+
+	return true, nil, origin, dir, result
+end
+
 local function processShoot(player: Player, payload: any)
 	local weaponId = getWeaponId(player)
 	local weaponCfg = Weapons.Get(weaponId)
@@ -125,11 +203,6 @@ local function processShoot(player: Player, payload: any)
 
 	local char, shooterHum, hrp = getAlive(player)
 	if not char then return end
-
-	local fire = weaponCfg.fire or {}
-	local rpm = tonumber(fire.rpm) or 420
-
-	if not canShoot(player, weaponId, rpm) then return end
 
 	local st = getAmmoState(player, weaponId, weaponCfg)
 	if st.reloading and os.clock() < st.reloadEnd then
@@ -147,10 +220,36 @@ local function processShoot(player: Player, payload: any)
 	local muzzlePos = muzzle and muzzle.WorldPosition or hrp.Position
 
 	local netCfg = weaponCfg.net or {}
-	local originMax = tonumber(netCfg.originMaxOffsetFromHead) or 20
-	local origin = sanitizeOrigin(payload.origin, char, hrp, originMax)
-	local dir = sanitizeDir(payload.direction)
-	if not origin or not dir then return end
+	local ok, reason, origin, dir, validatedResult = validateClaimedHit(player, payload, char, hrp, weaponId, weaponCfg)
+	if not ok or not origin or not dir then
+		logRejection(player, reason or "validation_unknown", payload)
+		local range = tonumber(weaponCfg.hitscan and weaponCfg.hitscan.range) or 800
+		local fallbackOrigin = hrp.Position
+		local fallbackDir = Vector3.new(0, 0, -1)
+		if typeof(payload.origin) == "Vector3" then
+			local originMax = tonumber(netCfg.originMaxOffsetFromHead) or 20
+			local sanitized = sanitizeOrigin(payload.origin, char, hrp, originMax)
+			if sanitized then
+				fallbackOrigin = sanitized
+			end
+		end
+		if typeof(payload.direction) == "Vector3" and payload.direction.Magnitude >= 0.001 then
+			fallbackDir = payload.direction.Unit
+		end
+		Net.FXEvent:FireAllClients({
+			type = "Shot",
+			weaponId = weaponId,
+			shooterUserId = player.UserId,
+			startPos = muzzlePos,
+			hitPos = fallbackOrigin + fallbackDir * range,
+			hitNormal = Vector3.new(0, 1, 0),
+			didHit = false,
+			shotId = payload.shotId,
+			rejected = true,
+			reason = reason,
+		})
+		return
+	end
 
 	-- gastar bala (server-authoritative)
 	st.mag -= 1
@@ -158,7 +257,7 @@ local function processShoot(player: Player, payload: any)
 
 	if weaponCfg.kind == "Hitscan" then
 		local range = tonumber(weaponCfg.hitscan and weaponCfg.hitscan.range) or 800
-		local result = RaycastUtil.hitscan({char}, origin, dir, range)
+		local result = validatedResult or RaycastUtil.hitscan({char}, origin, dir, range)
 		local hitPos = result and result.Position or (origin + dir * range)
 		local hitNormal = result and result.Normal or Vector3.new(0,1,0)
 		local didHit = (result ~= nil)
@@ -207,6 +306,10 @@ local function processShoot(player: Player, payload: any)
 			hitPos = hitPos,
 			hitNormal = hitNormal,
 			didHit = didHit,
+			shotId = payload.shotId,
+			clientShotTime = payload.clientShotTime,
+			claimedHitPart = payload.claimedHitPart,
+			claimedHitPosition = payload.claimedHitPosition,
 		})
 
 		-- HitConfirm al tirador
