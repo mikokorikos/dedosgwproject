@@ -14,6 +14,9 @@ for _, mod in ipairs(folder:GetChildren()) do
 	if mod:IsA("ModuleScript") then
 		local cfg = require(mod) :: AbilityConfig
 		ConfigValidator.validateAbilityConfig(mod:GetFullName(), cfg)
+		if byId[cfg.id] ~= nil then
+			error(string.format("[AbilityRegistry] Duplicate id '%s' in module '%s'", cfg.id, mod:GetFullName()))
+		end
 		byId[cfg.id] = cfg
 		if cfg.isDefault == true then
 			defaultId = cfg.id
