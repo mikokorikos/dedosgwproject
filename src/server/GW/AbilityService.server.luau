@@ -59,7 +59,7 @@ local function hideAndRegrow(rocket: BasePart, cfg: any)
 end
 
 local function playSound(name: string, parent: Instance, loop: boolean): Sound?
-	local t = Sounds:FindFirstChild(name)
+	local t = Sounds:FindFirstChild(name, true)
 	if not (t and t:IsA("Sound")) then
 		warn("[AbilityService] Missing sound:", name)
 		return nil
@@ -78,7 +78,7 @@ local function playSound(name: string, parent: Instance, loop: boolean): Sound?
 end
 
 local function instantiateProjectile(cfg: any)
-	local template = Projectiles:FindFirstChild(cfg.projectileTemplateName)
+	local template = Projectiles:FindFirstChild(cfg.projectileTemplateName, true)
 	if not template then
 		warn("[AbilityService] Missing projectile template:", cfg.projectileTemplateName)
 		return nil

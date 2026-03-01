@@ -1,4 +1,8 @@
-return {
+--!strict
+local Types = require(script.Parent.Parent.Parent.Shared.Types)
+type WeaponConfig = Types.WeaponConfig
+
+local config: WeaponConfig = {
 	id = "SoldierRifle",
 	isDefault = true,
 	displayName = "Soldier Rifle",
@@ -12,21 +16,26 @@ return {
 	fx = {
 		muzzleEmittersPath = "Weapons/SoldierRifle/MuzzleEmitters",
 		impactEmittersPath = "Weapons/SoldierRifle/ImpactEmitters",
-		beamTemplatePath   = "Weapons/SoldierRifle/TracerBeamTemplate",
+		beamTemplatePath = "Weapons/SoldierRifle/TracerBeamTemplate",
 
 		tracer = {
 			mode = "Snapshot",
-			speed = 3200, persist = 0.035, fade = 0.8,
-			width0 = 0.16, width1 = 0.10,
+			speed = 3200,
+			persist = 0.035,
+			fade = 0.8,
+			width0 = 0.16,
+			width1 = 0.10,
 			brightness = 1.0,
 		},
 	},
 
 	sfx = {
-		shotPath        = "Weapons/SoldierRifle/ShotSoundTemplate",
-		hitConfirmPath  = "Weapons/SoldierRifle/HitConfirmSoundTemplate",
+		shotPath = "Weapons/SoldierRifle/ShotSoundTemplate",
+		hitConfirmPath = "Weapons/SoldierRifle/HitConfirmSoundTemplate",
 		killConfirmPath = "Weapons/SoldierRifle/KillConfirmSoundTemplate",
 	},
 
 	net = { originMaxOffsetFromHead = 20, muzzleMaxOffset = 14, allowFriendlyFire = false },
 }
+
+return config

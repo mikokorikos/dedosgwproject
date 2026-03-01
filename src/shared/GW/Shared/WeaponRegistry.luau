@@ -3,17 +3,23 @@ local RS = game:GetService("ReplicatedStorage")
 local GW = RS:WaitForChild("GW")
 local folder = GW:WaitForChild("Config"):WaitForChild("Weapons")
 
-local byId: {[string]: any} = {}
+local Types = require(script.Parent.Types)
+local ConfigValidator = require(script.Parent.ConfigValidator)
+type WeaponConfig = Types.WeaponConfig
+
+local byId: {[string]: WeaponConfig} = {}
 local defaultId: string? = nil
 
 for _, mod in ipairs(folder:GetChildren()) do
 	if mod:IsA("ModuleScript") then
-		local cfg = require(mod)
-		if type(cfg) == "table" and type(cfg.id) == "string" then
-			byId[cfg.id] = cfg
-			if cfg.isDefault == true then
-				defaultId = cfg.id
-			end
+		local cfg = require(mod) :: WeaponConfig
+		ConfigValidator.validateWeaponConfig(mod:GetFullName(), cfg)
+		if byId[cfg.id] ~= nil then
+			error(string.format("[WeaponRegistry] Duplicate id '%s' in module '%s'", cfg.id, mod:GetFullName()))
+		end
+		byId[cfg.id] = cfg
+		if cfg.isDefault == true then
+			defaultId = cfg.id
 		end
 	end
 end
@@ -29,13 +35,17 @@ local function getDefaultId(): string
 	return "SoldierRifle"
 end
 
+local function get(id: string?): WeaponConfig
+	local resolvedId = if type(id) == "string" then id else getDefaultId()
+	local cfg = byId[resolvedId] or byId[getDefaultId()]
+	if not cfg then
+		error("WeaponRegistry has no configs loaded")
+	end
+	return cfg
+end
+
 return {
 	ById = byId,
 	DefaultId = getDefaultId(),
-	Get = function(id: string?): any
-		if type(id) ~= "string" then
-			id = getDefaultId()
-		end
-		return byId[id] or byId[getDefaultId()]
-	end,
+	Get = get,
 }
