@@ -13,6 +13,7 @@ local fireModeAuto = false
 local nextShotAt = 0
 local shootRequested = false
 local fireInterval = 0
+local NO_CAMERA_BACKOFF = 1 / 60
 
 local localAmmo = {
 	initialized = false,
@@ -53,16 +54,16 @@ local function isTyping()
 	return UIS:GetFocusedTextBox() ~= nil
 end
 
-local function tryShoot(weaponCfg)
-	if not canUseAmmoState() then return false end
-	if localAmmo.reloading and os.clock() < localAmmo.reloadEnd then return false end
+local function tryShoot(): "ok" | "blocked_reload" | "blocked_ammo" | "no_camera"
+	if not canUseAmmoState() then return "blocked_reload" end
+	if localAmmo.reloading and os.clock() < localAmmo.reloadEnd then return "blocked_reload" end
 	if localAmmo.mag <= 0 then
 		Net.CombatRequest:FireServer({ action="DryTrigger", weaponId = localAmmo.weaponId })
-		return false
+		return "blocked_ammo"
 	end
 
 	local origin, dir = getAimRay()
-	if not origin or not dir then return false end
+	if not origin or not dir then return "no_camera" end
 
 	-- predicción local de ammo para UI feel
 	localAmmo.mag -= 1
@@ -74,7 +75,7 @@ local function tryShoot(weaponCfg)
 		direction = dir,
 	})
 
-	return true
+	return "ok"
 end
 
 local function tryReload()
@@ -138,8 +139,10 @@ RunService.Heartbeat:Connect(function()
 
 	if not shouldTryShoot then return end
 
-	local weaponCfg = getWeaponCfg()
-	if tryShoot(weaponCfg) then
+	local shotResult = tryShoot()
+	if shotResult == "no_camera" then
+		nextShotAt = now + NO_CAMERA_BACKOFF
+	else
 		nextShotAt = now + fireInterval
 	end
 
