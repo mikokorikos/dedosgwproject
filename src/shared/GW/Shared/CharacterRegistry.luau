@@ -7,6 +7,7 @@ local Types = require(script.Parent.Types)
 local AbilityRegistry = require(script.Parent.AbilityRegistry)
 local WeaponRegistry = require(script.Parent.WeaponRegistry)
 local ConfigValidator = require(script.Parent.ConfigValidator)
+local RegistryLinker = require(script.Parent.RegistryLinker)
 type CharacterConfig = Types.CharacterConfig
 
 local byId: {[string]: CharacterConfig} = {}
@@ -16,12 +17,18 @@ for _, mod in ipairs(folder:GetChildren()) do
 	if mod:IsA("ModuleScript") then
 		local cfg = require(mod) :: CharacterConfig
 		ConfigValidator.validateCharacterConfig(mod:GetFullName(), cfg, AbilityRegistry.ById, WeaponRegistry.ById)
+		if byId[cfg.id] ~= nil then
+			error(string.format("[CharacterRegistry] Duplicate id '%s' in module '%s'", cfg.id, mod:GetFullName()))
+		end
 		byId[cfg.id] = cfg
 		if cfg.isDefault == true then
 			defaultId = cfg.id
 		end
 	end
 end
+
+
+local linked = RegistryLinker.link(AbilityRegistry.ById, WeaponRegistry.ById, byId)
 
 local function getDefaultId(): string
 	if defaultId and byId[defaultId] then
@@ -46,4 +53,5 @@ return {
 	ById = byId,
 	DefaultId = getDefaultId(),
 	Get = get,
+	AbilityToCharacterIds = linked.abilityToCharacterIds,
 }
