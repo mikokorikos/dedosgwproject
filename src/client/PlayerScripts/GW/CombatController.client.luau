@@ -2,15 +2,17 @@
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
 local RS = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 
 local player = Players.LocalPlayer
 local Net = require(RS.GW.Shared.Net)
 local Weapons = require(RS.GW.Shared.WeaponRegistry)
 
-local isTriggerHeld = false
-local isAutoWeapon = false
+local triggerHeld = false
+local fireModeAuto = false
 local nextShotAt = 0
-local autoFireLoopActive = false
+local shootRequested = false
+local fireInterval = 0
 
 local localAmmo = {
 	mag = 0,
@@ -80,40 +82,14 @@ UIS.InputBegan:Connect(function(input, gp)
 	if gp or isTyping() then return end
 
 	if input.UserInputType == Enum.UserInputType.MouseButton1 then
-		if isTriggerHeld then return end
-		isTriggerHeld = true
+		if triggerHeld then return end
+		triggerHeld = true
 
 		local weaponCfg = getWeaponCfg()
+		fireModeAuto = (weaponCfg.fire and weaponCfg.fire.auto) == true
 		local rpm = tonumber(weaponCfg.fire and weaponCfg.fire.rpm) or 420
-		local interval = 60 / math.max(rpm, 1)
-		isAutoWeapon = (weaponCfg.fire and weaponCfg.fire.auto) == true
-
-		if isAutoWeapon then
-			if autoFireLoopActive then return end
-			autoFireLoopActive = true
-			task.spawn(function()
-				while isTriggerHeld and isAutoWeapon do
-					local now = os.clock()
-					if now >= nextShotAt then
-						if tryShoot(weaponCfg) then
-							nextShotAt = now + interval
-						end
-					end
-
-					local waitTime = 0.03
-					if nextShotAt > now then
-						waitTime = math.min(0.03, nextShotAt - now)
-					end
-					task.wait(waitTime)
-				end
-				autoFireLoopActive = false
-			end)
-		else
-			local now = os.clock()
-			if now >= nextShotAt and tryShoot(weaponCfg) then
-				nextShotAt = now + interval
-			end
-		end
+		fireInterval = 60 / math.max(rpm, 1)
+		shootRequested = true
 	elseif input.KeyCode == Enum.KeyCode.R then
 		tryReload()
 	end
@@ -121,8 +97,32 @@ end)
 
 UIS.InputEnded:Connect(function(input)
 	if input.UserInputType == Enum.UserInputType.MouseButton1 then
-		isTriggerHeld = false
-		isAutoWeapon = false
+		triggerHeld = false
+	end
+end)
+
+RunService.Heartbeat:Connect(function()
+	local now = os.clock()
+	if now < nextShotAt then return end
+
+	local shouldTryShoot = false
+	if fireModeAuto then
+		if triggerHeld then
+			shouldTryShoot = true
+		end
+	elseif shootRequested then
+		shouldTryShoot = true
+	end
+
+	if not shouldTryShoot then return end
+
+	local weaponCfg = getWeaponCfg()
+	if tryShoot(weaponCfg) then
+		nextShotAt = now + fireInterval
+	end
+
+	if not fireModeAuto then
+		shootRequested = false
 	end
 end)
 
