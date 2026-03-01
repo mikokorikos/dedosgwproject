@@ -4,6 +4,7 @@ local GW = RS:WaitForChild("GW")
 local folder = GW:WaitForChild("Config"):WaitForChild("Weapons")
 
 local Types = require(script.Parent.Types)
+local ConfigValidator = require(script.Parent.ConfigValidator)
 type WeaponConfig = Types.WeaponConfig
 
 local byId: {[string]: WeaponConfig} = {}
@@ -12,11 +13,10 @@ local defaultId: string? = nil
 for _, mod in ipairs(folder:GetChildren()) do
 	if mod:IsA("ModuleScript") then
 		local cfg = require(mod) :: WeaponConfig
-		if type(cfg) == "table" and type(cfg.id) == "string" then
-			byId[cfg.id] = cfg
-			if cfg.isDefault == true then
-				defaultId = cfg.id
-			end
+		ConfigValidator.validateWeaponConfig(mod:GetFullName(), cfg)
+		byId[cfg.id] = cfg
+		if cfg.isDefault == true then
+			defaultId = cfg.id
 		end
 	end
 end
