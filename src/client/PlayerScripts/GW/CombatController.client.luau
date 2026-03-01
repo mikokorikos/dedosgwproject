@@ -7,8 +7,10 @@ local player = Players.LocalPlayer
 local Net = require(RS.GW.Shared.Net)
 local Weapons = require(RS.GW.Shared.WeaponRegistry)
 
-local firing = false
-local lastLocalShotAt = 0
+local isTriggerHeld = false
+local isAutoWeapon = false
+local nextShotAt = 0
+local autoFireLoopActive = false
 
 local localAmmo = {
 	mag = 0,
@@ -25,16 +27,6 @@ local function getWeaponCfg()
 	return Weapons.Get(id)
 end
 
-local function canLocalShoot(rpm: number)
-	local now = os.clock()
-	local interval = 60 / math.max(rpm, 1)
-	return (now - lastLocalShotAt) >= interval
-end
-
-local function markLocalShot()
-	lastLocalShotAt = os.clock()
-end
-
 local function getAimRay()
 	local cam = workspace.CurrentCamera
 	if not cam then return nil end
@@ -48,20 +40,15 @@ local function isTyping()
 	return UIS:GetFocusedTextBox() ~= nil
 end
 
-local function tryShoot()
-	local weaponCfg = getWeaponCfg()
-	local rpm = tonumber(weaponCfg.fire and weaponCfg.fire.rpm) or 420
-	if not canLocalShoot(rpm) then return end
-	if localAmmo.reloading and os.clock() < localAmmo.reloadEnd then return end
+local function tryShoot(weaponCfg)
+	if localAmmo.reloading and os.clock() < localAmmo.reloadEnd then return false end
 	if localAmmo.mag <= 0 then
 		Net.CombatRequest:FireServer({ action="Shoot", origin=Vector3.zero, direction=Vector3.new(0,0,-1) })
-		return
+		return false
 	end
 
 	local origin, dir = getAimRay()
-	if not origin or not dir then return end
-
-	markLocalShot()
+	if not origin or not dir then return false end
 
 	-- predicción local de ammo para UI feel
 	localAmmo.mag -= 1
@@ -72,6 +59,8 @@ local function tryShoot()
 		origin = origin,
 		direction = dir,
 	})
+
+	return true
 end
 
 local function tryReload()
@@ -91,17 +80,40 @@ UIS.InputBegan:Connect(function(input, gp)
 	if gp or isTyping() then return end
 
 	if input.UserInputType == Enum.UserInputType.MouseButton1 then
-		if firing then return end
-		firing = true
-		task.spawn(function()
-			while firing do
-				local weaponCfg = getWeaponCfg()
-				local auto = (weaponCfg.fire and weaponCfg.fire.auto) == true
-				tryShoot()
-				if not auto then break end
-				task.wait(0.01)
+		if isTriggerHeld then return end
+		isTriggerHeld = true
+
+		local weaponCfg = getWeaponCfg()
+		local rpm = tonumber(weaponCfg.fire and weaponCfg.fire.rpm) or 420
+		local interval = 60 / math.max(rpm, 1)
+		isAutoWeapon = (weaponCfg.fire and weaponCfg.fire.auto) == true
+
+		if isAutoWeapon then
+			if autoFireLoopActive then return end
+			autoFireLoopActive = true
+			task.spawn(function()
+				while isTriggerHeld and isAutoWeapon do
+					local now = os.clock()
+					if now >= nextShotAt then
+						if tryShoot(weaponCfg) then
+							nextShotAt = now + interval
+						end
+					end
+
+					local waitTime = 0.03
+					if nextShotAt > now then
+						waitTime = math.min(0.03, nextShotAt - now)
+					end
+					task.wait(waitTime)
+				end
+				autoFireLoopActive = false
+			end)
+		else
+			local now = os.clock()
+			if now >= nextShotAt and tryShoot(weaponCfg) then
+				nextShotAt = now + interval
 			end
-		end)
+		end
 	elseif input.KeyCode == Enum.KeyCode.R then
 		tryReload()
 	end
@@ -109,7 +121,8 @@ end)
 
 UIS.InputEnded:Connect(function(input)
 	if input.UserInputType == Enum.UserInputType.MouseButton1 then
-		firing = false
+		isTriggerHeld = false
+		isAutoWeapon = false
 	end
 end)
 
