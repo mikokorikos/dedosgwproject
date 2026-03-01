@@ -3,12 +3,15 @@ local RS = game:GetService("ReplicatedStorage")
 local GW = RS:WaitForChild("GW")
 local folder = GW:WaitForChild("Config"):WaitForChild("Weapons")
 
-local byId: {[string]: any} = {}
+local Types = require(script.Parent.Types)
+type WeaponConfig = Types.WeaponConfig
+
+local byId: {[string]: WeaponConfig} = {}
 local defaultId: string? = nil
 
 for _, mod in ipairs(folder:GetChildren()) do
 	if mod:IsA("ModuleScript") then
-		local cfg = require(mod)
+		local cfg = require(mod) :: WeaponConfig
 		if type(cfg) == "table" and type(cfg.id) == "string" then
 			byId[cfg.id] = cfg
 			if cfg.isDefault == true then
@@ -29,13 +32,17 @@ local function getDefaultId(): string
 	return "SoldierRifle"
 end
 
+local function get(id: string?): WeaponConfig
+	local resolvedId = if type(id) == "string" then id else getDefaultId()
+	local cfg = byId[resolvedId] or byId[getDefaultId()]
+	if not cfg then
+		error("WeaponRegistry has no configs loaded")
+	end
+	return cfg
+end
+
 return {
 	ById = byId,
 	DefaultId = getDefaultId(),
-	Get = function(id: string?): any
-		if type(id) ~= "string" then
-			id = getDefaultId()
-		end
-		return byId[id] or byId[getDefaultId()]
-	end,
+	Get = get,
 }

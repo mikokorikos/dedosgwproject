@@ -3,12 +3,15 @@ local RS = game:GetService("ReplicatedStorage")
 local GW = RS:WaitForChild("GW")
 local folder = GW:WaitForChild("Config"):WaitForChild("Characters")
 
-local byId: {[string]: any} = {}
+local Types = require(script.Parent.Types)
+type CharacterConfig = Types.CharacterConfig
+
+local byId: {[string]: CharacterConfig} = {}
 local defaultId: string? = nil
 
 for _, mod in ipairs(folder:GetChildren()) do
 	if mod:IsA("ModuleScript") then
-		local cfg = require(mod)
+		local cfg = require(mod) :: CharacterConfig
 		if type(cfg) == "table" and type(cfg.id) == "string" then
 			byId[cfg.id] = cfg
 			if cfg.isDefault == true then
@@ -28,11 +31,17 @@ local function getDefaultId(): string
 	return "Soldier"
 end
 
+local function get(id: string?): CharacterConfig
+	local resolvedId = if type(id) == "string" then id else getDefaultId()
+	local cfg = byId[resolvedId] or byId[getDefaultId()]
+	if not cfg then
+		error("CharacterRegistry has no configs loaded")
+	end
+	return cfg
+end
+
 return {
 	ById = byId,
 	DefaultId = getDefaultId(),
-	Get = function(id: string?): any
-		if type(id) ~= "string" then id = getDefaultId() end
-		return byId[id] or byId[getDefaultId()]
-	end,
+	Get = get,
 }
