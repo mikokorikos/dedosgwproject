@@ -15,12 +15,23 @@ local shootRequested = false
 local fireInterval = 0
 
 local localAmmo = {
+	initialized = false,
 	mag = 0,
 	reserve = 0,
 	reloading = false,
 	reloadEnd = 0,
 	weaponId = Weapons.DefaultId,
 }
+
+local function canUseAmmoState(): boolean
+	return localAmmo.initialized == true
+end
+
+local function resetAmmoInitializationForWeapon()
+	localAmmo.initialized = false
+	localAmmo.reloading = false
+	localAmmo.reloadEnd = 0
+end
 
 local function getWeaponCfg()
 	local id = player:GetAttribute("WeaponId")
@@ -43,9 +54,10 @@ local function isTyping()
 end
 
 local function tryShoot(weaponCfg)
+	if not canUseAmmoState() then return false end
 	if localAmmo.reloading and os.clock() < localAmmo.reloadEnd then return false end
 	if localAmmo.mag <= 0 then
-		Net.CombatRequest:FireServer({ action="Shoot", origin=Vector3.zero, direction=Vector3.new(0,0,-1) })
+		Net.CombatRequest:FireServer({ action="DryTrigger", weaponId = localAmmo.weaponId })
 		return false
 	end
 
@@ -66,6 +78,7 @@ local function tryShoot(weaponCfg)
 end
 
 local function tryReload()
+	if not canUseAmmoState() then return end
 	local weaponCfg = getWeaponCfg()
 	local magSize = tonumber(weaponCfg.ammo and weaponCfg.ammo.magSize) or 30
 	if localAmmo.reloading and os.clock() < localAmmo.reloadEnd then return end
@@ -77,6 +90,15 @@ local function tryReload()
 		weaponId = localAmmo.weaponId,
 	})
 end
+
+player.CharacterAdded:Connect(function()
+	resetAmmoInitializationForWeapon()
+end)
+
+player:GetAttributeChangedSignal("WeaponId"):Connect(function()
+	getWeaponCfg()
+	resetAmmoInitializationForWeapon()
+end)
 
 UIS.InputBegan:Connect(function(input, gp)
 	if gp or isTyping() then return end
@@ -131,6 +153,7 @@ Net.FXEvent.OnClientEvent:Connect(function(ev)
 	if type(ev) ~= "table" then return end
 	if ev.type == "Ammo" then
 		if ev.weaponId == localAmmo.weaponId then
+			localAmmo.initialized = true
 			localAmmo.mag = tonumber(ev.mag) or localAmmo.mag
 			localAmmo.reserve = tonumber(ev.reserve) or localAmmo.reserve
 			localAmmo.reloading = (ev.reloading == true)

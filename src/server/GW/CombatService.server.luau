@@ -16,6 +16,7 @@ type AmmoState = {
 
 local lastShotAt: {[Player]: {[string]: number}} = {}
 local ammoByPlayer: {[Player]: {[string]: AmmoState}} = {}
+local ammoHandshakeByPlayer: {[Player]: {[string]: boolean}} = {}
 local deathLock = setmetatable({}, {__mode="k"}) :: {[Humanoid]: number}
 
 local function getAlive(player: Player): (Model?, Humanoid?, BasePart?)
@@ -52,6 +53,9 @@ local function getAmmoState(player: Player, weaponId: string, weaponCfg: any): A
 end
 
 local function fireAmmoUpdate(player: Player, weaponId: string, st: AmmoState)
+	ammoHandshakeByPlayer[player] = ammoHandshakeByPlayer[player] or {}
+	ammoHandshakeByPlayer[player][weaponId] = true
+
 	Net.FXEvent:FireClient(player, {
 		type = "Ammo",
 		weaponId = weaponId,
@@ -60,6 +64,13 @@ local function fireAmmoUpdate(player: Player, weaponId: string, st: AmmoState)
 		reloading = st.reloading,
 		reloadEnd = st.reloadEnd,
 	})
+end
+
+local function ensureAmmoHandshake(player: Player, weaponId: string, weaponCfg: any)
+	ammoHandshakeByPlayer[player] = ammoHandshakeByPlayer[player] or {}
+	if ammoHandshakeByPlayer[player][weaponId] then return end
+	local st = getAmmoState(player, weaponId, weaponCfg)
+	fireAmmoUpdate(player, weaponId, st)
 end
 
 local function canShoot(player: Player, weaponId: string, rpm: number): boolean
@@ -110,6 +121,7 @@ end
 local function processShoot(player: Player, payload: any)
 	local weaponId = getWeaponId(player)
 	local weaponCfg = Weapons.Get(weaponId)
+	ensureAmmoHandshake(player, weaponId, weaponCfg)
 
 	local char, shooterHum, hrp = getAlive(player)
 	if not char then return end
@@ -226,6 +238,7 @@ end
 local function processReload(player: Player, payload: any)
 	local weaponId = getWeaponId(player)
 	local weaponCfg = Weapons.Get(weaponId)
+	ensureAmmoHandshake(player, weaponId, weaponCfg)
 	local char, hum, hrp = getAlive(player)
 	if not char then return end
 
@@ -267,6 +280,11 @@ end
 
 Net.CombatRequest.OnServerEvent:Connect(function(player: Player, payload: any)
 	if type(payload) ~= "table" then return end
+
+	local weaponId = getWeaponId(player)
+	local weaponCfg = Weapons.Get(weaponId)
+	ensureAmmoHandshake(player, weaponId, weaponCfg)
+
 	local action = payload.action
 	if action == "Shoot" then
 		processShoot(player, payload)
@@ -275,9 +293,28 @@ Net.CombatRequest.OnServerEvent:Connect(function(player: Player, payload: any)
 	end
 end)
 
+Players.PlayerAdded:Connect(function(player)
+	player.CharacterAdded:Connect(function()
+		task.defer(function()
+			if not player.Parent then return end
+			local weaponId = getWeaponId(player)
+			local weaponCfg = Weapons.Get(weaponId)
+			ensureAmmoHandshake(player, weaponId, weaponCfg)
+		end)
+	end)
+
+	player:GetAttributeChangedSignal("WeaponId"):Connect(function()
+		if not player.Parent then return end
+		local weaponId = getWeaponId(player)
+		local weaponCfg = Weapons.Get(weaponId)
+		ensureAmmoHandshake(player, weaponId, weaponCfg)
+	end)
+end)
+
 Players.PlayerRemoving:Connect(function(player)
 	lastShotAt[player] = nil
 	ammoByPlayer[player] = nil
+	ammoHandshakeByPlayer[player] = nil
 end)
 
 print("[GW] CombatService activo.")
