@@ -52,6 +52,37 @@ local function validateNumber(errors: {string}, path: string, value: any, requir
 	end
 end
 
+local function validateNumberRange(errors: {string}, path: string, value: any, required: boolean, minValue: number?, maxValue: number?, includeMin: boolean?, includeMax: boolean?)
+	if value == nil then
+		if required then
+			pushError(errors, path, "is required")
+		end
+		return
+	end
+	if type(value) ~= "number" then
+		pushError(errors, path, "must be a number")
+		return
+	end
+	if minValue ~= nil then
+		if includeMin == true then
+			if value < minValue then
+				pushError(errors, path, string.format("must be >= %s", tostring(minValue)))
+			end
+		elseif value <= minValue then
+			pushError(errors, path, string.format("must be > %s", tostring(minValue)))
+		end
+	end
+	if maxValue ~= nil then
+		if includeMax == true then
+			if value > maxValue then
+				pushError(errors, path, string.format("must be <= %s", tostring(maxValue)))
+			end
+		elseif value >= maxValue then
+			pushError(errors, path, string.format("must be < %s", tostring(maxValue)))
+		end
+	end
+end
+
 local function throwIfInvalid(domainName: string, moduleName: string, errors: {string})
 	if #errors == 0 then
 		return
@@ -108,6 +139,23 @@ local function validateWeaponConfig(moduleName: string, cfg: any)
 		end
 	else
 		pushError(errors, "hitscan", "is required")
+	end
+
+	if cfg.net ~= nil then
+		if type(cfg.net) ~= "table" then
+			pushError(errors, "net", "must be a table")
+		else
+			validateNumberRange(errors, "net.originOffsetTolerance", cfg.net.originOffsetTolerance, false, 0, 256, false, true)
+			validateNumberRange(errors, "net.maxOriginOffsetFromHead", cfg.net.maxOriginOffsetFromHead, false, 0, 256, false, true)
+			validateNumberRange(errors, "net.originMaxOffsetFromHead", cfg.net.originMaxOffsetFromHead, false, 0, 256, false, true)
+			validateNumberRange(errors, "net.muzzleMaxOffset", cfg.net.muzzleMaxOffset, false, 0, 256, false, true)
+
+			validateNumberRange(errors, "net.rofTolerance", cfg.net.rofTolerance, false, 0, 1, true, true)
+			validateNumberRange(errors, "net.maxConeAngle", cfg.net.maxConeAngle, false, 0, 45, false, true)
+			validateNumberRange(errors, "net.losTolerance", cfg.net.losTolerance, false, 0, 64, false, true)
+
+			validateBoolean(errors, "net.allowFriendlyFire", cfg.net.allowFriendlyFire, false)
+		end
 	end
 
 	throwIfInvalid("Weapon", moduleName, errors)

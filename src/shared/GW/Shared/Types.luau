@@ -49,8 +49,14 @@ export type WeaponConfig = {
 	}?,
 
 	net: {
+		-- Compat aliases for server-side origin validation offsets.
+		originOffsetTolerance: number?,
+		maxOriginOffsetFromHead: number?,
 		originMaxOffsetFromHead: number?,
 		muzzleMaxOffset: number?,
+		rofTolerance: number?,
+		maxConeAngle: number?,
+		losTolerance: number?,
 		allowFriendlyFire: boolean?,
 	}?,
 }

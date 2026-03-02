@@ -35,7 +35,24 @@ local config: WeaponConfig = {
 		killConfirmPath = "Weapons/SoldierRifle/KillConfirmSoundTemplate",
 	},
 
-	net = { originMaxOffsetFromHead = 20, muzzleMaxOffset = 14, allowFriendlyFire = false },
+	net = {
+		-- Aliases de offset de origen (equivalentes entre sí para compatibilidad).
+		originOffsetTolerance = 20,
+		maxOriginOffsetFromHead = 20,
+		originMaxOffsetFromHead = 20,
+		muzzleMaxOffset = 14,
+
+		-- Nuevos campos de tuning de red.
+		rofTolerance = 0.12,
+		maxConeAngle = 6,
+		losTolerance = 12,
+
+		-- Equivalencias con los campos net actuales del servidor:
+		-- * originOffsetTolerance/maxOriginOffsetFromHead ~= originMaxOffsetFromHead
+		-- * losTolerance ~= recastHitPosTolerance
+		-- * maxConeAngle reemplaza la tolerancia lineal de "claimedHitLineTolerance"
+		allowFriendlyFire = false,
+	},
 }
 
 return config
