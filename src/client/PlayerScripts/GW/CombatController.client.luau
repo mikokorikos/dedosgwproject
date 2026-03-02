@@ -8,11 +8,13 @@ local player = Players.LocalPlayer
 local Net = require(RS.GW.Shared.Net)
 local Weapons = require(RS.GW.Shared.WeaponRegistry)
 
-local triggerHeld = false
-local fireModeAuto = false
-local nextShotAt = 0
-local shootRequested = false
-local fireInterval = 0
+local firingState = {
+	triggerHeld = false,
+	isFiringLoopActive = false,
+	fireModeAuto = false,
+	nextShotAt = 0,
+	fireInterval = 0,
+}
 local NO_CAMERA_BACKOFF = 1 / 60
 local shotSequence = 0
 
@@ -115,11 +117,45 @@ local function tryReload()
 	})
 end
 
-player.CharacterAdded:Connect(function()
+local function stopFiringLoop()
+	firingState.triggerHeld = false
+	firingState.isFiringLoopActive = false
+end
+
+local function onShotAttempt(shotResult: "ok" | "blocked_reload" | "blocked_ammo" | "no_camera", now: number)
+	if shotResult == "no_camera" then
+		firingState.nextShotAt = now + NO_CAMERA_BACKOFF
+	else
+		firingState.nextShotAt = now + firingState.fireInterval
+	end
+end
+
+local function fireImmediateShot(now: number)
+	local shotResult = tryShoot()
+	onShotAttempt(shotResult, now)
+end
+
+local function bindHumanoidDeath(character: Model)
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if not humanoid then return end
+
+	humanoid.Died:Connect(function()
+		stopFiringLoop()
+	end)
+end
+
+player.CharacterAdded:Connect(function(character)
+	stopFiringLoop()
 	resetAmmoInitializationForWeapon()
+	bindHumanoidDeath(character)
 end)
 
+if player.Character then
+	bindHumanoidDeath(player.Character)
+end
+
 player:GetAttributeChangedSignal("WeaponId"):Connect(function()
+	stopFiringLoop()
 	getWeaponCfg()
 	resetAmmoInitializationForWeapon()
 end)
@@ -128,14 +164,17 @@ UIS.InputBegan:Connect(function(input, gp)
 	if gp or isTyping() then return end
 
 	if input.UserInputType == Enum.UserInputType.MouseButton1 then
-		if triggerHeld then return end
-		triggerHeld = true
+		if firingState.triggerHeld then return end
+		firingState.triggerHeld = true
 
 		local weaponCfg = getWeaponCfg()
-		fireModeAuto = (weaponCfg.fire and weaponCfg.fire.auto) == true
+		firingState.fireModeAuto = (weaponCfg.fire and weaponCfg.fire.auto) == true
 		local rpm = tonumber(weaponCfg.fire and weaponCfg.fire.rpm) or 420
-		fireInterval = 60 / math.max(rpm, 1)
-		shootRequested = true
+		firingState.fireInterval = 60 / math.max(rpm, 1)
+
+		local now = os.clock()
+		fireImmediateShot(now)
+		firingState.isFiringLoopActive = firingState.fireModeAuto
 	elseif input.KeyCode == Enum.KeyCode.R then
 		tryReload()
 	end
@@ -143,35 +182,26 @@ end)
 
 UIS.InputEnded:Connect(function(input)
 	if input.UserInputType == Enum.UserInputType.MouseButton1 then
-		triggerHeld = false
+		stopFiringLoop()
 	end
 end)
 
-RunService.Heartbeat:Connect(function()
-	local now = os.clock()
-	if now < nextShotAt then return end
+UIS.WindowFocusReleased:Connect(function()
+	stopFiringLoop()
+end)
 
-	local shouldTryShoot = false
-	if fireModeAuto then
-		if triggerHeld then
-			shouldTryShoot = true
-		end
-	elseif shootRequested then
-		shouldTryShoot = true
+RunService.Heartbeat:Connect(function()
+	if not firingState.isFiringLoopActive then return end
+	if not firingState.triggerHeld then
+		stopFiringLoop()
+		return
 	end
 
-	if not shouldTryShoot then return end
+	local now = os.clock()
+	if now < firingState.nextShotAt then return end
 
 	local shotResult = tryShoot()
-	if shotResult == "no_camera" then
-		nextShotAt = now + NO_CAMERA_BACKOFF
-	else
-		nextShotAt = now + fireInterval
-	end
-
-	if not fireModeAuto then
-		shootRequested = false
-	end
+	onShotAttempt(shotResult, now)
 end)
 
 -- sync desde server
