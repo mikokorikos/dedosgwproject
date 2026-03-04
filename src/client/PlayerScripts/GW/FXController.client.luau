@@ -6,6 +6,7 @@ local Workspace = game:GetService("Workspace")
 
 local player = Players.LocalPlayer
 local Net = require(RS.GW.Shared.Net)
+local LocalEffectsBus = require(script.Parent.LocalEffectsBus)
 
 local okW, Weapons = pcall(require, RS.GW.Shared:WaitForChild("WeaponRegistry"))
 if not okW then
@@ -264,6 +265,10 @@ Net.FXEvent.OnClientEvent:Connect(function(ev)
 	elseif t == "Explosion" then
 		renderExplosion(ev)
 	end
+end)
+
+LocalEffectsBus.OnShot(function(ev)
+	renderShot(ev)
 end)
 
 print("[GW] FXController (paths+fallback) activo.")
