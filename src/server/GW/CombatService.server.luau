@@ -18,7 +18,8 @@ local lastShotAt: {[Player]: {[string]: number}} = {}
 local ammoByPlayer: {[Player]: {[string]: AmmoState}} = {}
 local ammoHandshakeByPlayer: {[Player]: {[string]: boolean}} = {}
 local deathLock = setmetatable({}, {__mode="k"}) :: {[Humanoid]: number}
-local rejectionCountByReason: {[string]: number} = {}
+local rejectionCountByReason: {[string]: {count: number, lastLogAt: number}} = {}
+local processedDamageShotByPlayer: {[Player]: {[string]: boolean}} = {}
 
 local function getAlive(player: Player): (Model?, Humanoid?, BasePart?)
 	local char = player.Character
@@ -74,12 +75,13 @@ local function ensureAmmoHandshake(player: Player, weaponId: string, weaponCfg: 
 	fireAmmoUpdate(player, weaponId, st)
 end
 
-local function canShoot(player: Player, weaponId: string, rpm: number): boolean
+local function canShoot(player: Player, weaponId: string, rpm: number, rofTolerance: number?): boolean
 	lastShotAt[player] = lastShotAt[player] or {}
 	local now = os.clock()
 	local last = lastShotAt[player][weaponId] or 0
 	local interval = 60 / math.max(rpm, 1)
-	if now - last < interval then
+	local jitterAllowance = interval * math.clamp(tonumber(rofTolerance) or 0, 0, 0.5)
+	if now - last < (interval - jitterAllowance) then
 		return false
 	end
 	lastShotAt[player][weaponId] = now
@@ -120,7 +122,20 @@ local function findMuzzle(char: Model, weaponCfg: any): Attachment?
 end
 
 local function logRejection(player: Player, reason: string, payload: any)
-	rejectionCountByReason[reason] = (rejectionCountByReason[reason] or 0) + 1
+	local now = os.clock()
+	local state = rejectionCountByReason[reason]
+	if not state then
+		state = {count = 0, lastLogAt = 0}
+		rejectionCountByReason[reason] = state
+	end
+	state.count += 1
+
+	local shouldLog = state.count == 1 or (now - state.lastLogAt) >= 5 or (state.count % 25) == 0
+	if not shouldLog then
+		return
+	end
+	state.lastLogAt = now
+
 	local shotId = if type(payload) == "table" and type(payload.shotId) == "string" then payload.shotId else "n/a"
 	warn(string.format(
 		"[GW][CombatReject] player=%s userId=%d shotId=%s reason=%s count=%d",
@@ -128,72 +143,140 @@ local function logRejection(player: Player, reason: string, payload: any)
 		player.UserId,
 		shotId,
 		reason,
-		rejectionCountByReason[reason]
+		state.count
 	))
 end
 
-local function distPointToRay(point: Vector3, origin: Vector3, dirUnit: Vector3): number
-	local t = math.max(0, (point - origin):Dot(dirUnit))
-	local closest = origin + dirUnit * t
-	return (point - closest).Magnitude
+
+local function getShotId(payload: any): string?
+	if type(payload) ~= "table" then return nil end
+	if type(payload.shotId) == "string" and payload.shotId ~= "" then
+		return payload.shotId
+	end
+	return nil
 end
 
-local function validateClaimedHit(player: Player, payload: any, char: Model, hrp: BasePart, weaponId: string, weaponCfg: any): (boolean, string?, Vector3?, Vector3?, RaycastResult?)
+local function hasProcessedDamageShot(player: Player, shotId: string?): boolean
+	if not shotId then return false end
+	local byShot = processedDamageShotByPlayer[player]
+	return byShot ~= nil and byShot[shotId] == true
+end
+
+local function markProcessedDamageShot(player: Player, shotId: string?)
+	if not shotId then return end
+	processedDamageShotByPlayer[player] = processedDamageShotByPlayer[player] or {}
+	processedDamageShotByPlayer[player][shotId] = true
+end
+local function validateClaimedHit(player: Player, payload: any, char: Model, hrp: BasePart, weaponId: string, weaponCfg: any): (boolean, string?, Vector3?, Vector3?, Vector3?, RaycastResult?)
 	local fire = weaponCfg.fire or {}
+	local netCfg = weaponCfg.net or {}
 	local rpm = tonumber(fire.rpm) or 420
-	if not canShoot(player, weaponId, rpm) then
+	if not canShoot(player, weaponId, rpm, netCfg.rofTolerance) then
 		return false, "cadence_rpm"
 	end
 
-	local netCfg = weaponCfg.net or {}
 	local range = tonumber(weaponCfg.hitscan and weaponCfg.hitscan.range) or 800
 	local originMax = tonumber(netCfg.originMaxOffsetFromHead) or 20
 	local origin = sanitizeOrigin(payload.origin, char, hrp, originMax)
 	if not origin then
-		return false, "origin_invalid"
+		return false, "origin_invalid", nil, nil, nil, nil
 	end
 
-	local rawDir = payload.direction
+	local muzzle = findMuzzle(char, weaponCfg)
+	local muzzlePos = muzzle and muzzle.WorldPosition or hrp.Position
+	local muzzleMaxOffset = tonumber(netCfg.muzzleMaxOffset) or 14
+	if (origin - muzzlePos).Magnitude > muzzleMaxOffset then
+		return false, "origin_muzzle_offset", nil, nil, nil, nil
+	end
+
+	local rawDir = payload.direction or payload.dir
 	if typeof(rawDir) ~= "Vector3" then
-		return false, "dir_invalid_type"
+		return false, "dir_invalid_type", nil, nil, nil, nil
 	end
 	local rawMagnitude = rawDir.Magnitude
 	if rawMagnitude < 0.001 or rawMagnitude > 10_000 then
-		return false, "dir_invalid_magnitude"
+		return false, "dir_invalid_magnitude", nil, nil, nil, nil
 	end
 
 	local dir = sanitizeDir(rawDir)
 	if not dir then
-		return false, "dir_invalid"
+		return false, "dir_invalid", nil, nil, nil, nil
 	end
 
-	local claimedHitPosition = payload.claimedHitPosition
+	local claimedHitPosition = payload.hitPos or payload.claimedHitPosition
+	local clampedHitPos: Vector3? = nil
 	if claimedHitPosition ~= nil then
 		if typeof(claimedHitPosition) ~= "Vector3" then
-			return false, "claimed_hit_invalid_type"
+			return false, "claimed_hit_invalid_type", nil, nil, nil, nil
 		end
-		if (claimedHitPosition - origin).Magnitude > (range + 16) then
-			return false, "claimed_hit_too_far"
+		local toHit = claimedHitPosition - origin
+		local hitDist = toHit.Magnitude
+		if hitDist < 0.001 then
+			return false, "claimed_hit_too_close", nil, nil, nil, nil
 		end
-		local lineTolerance = tonumber(netCfg.claimedHitLineTolerance) or 8
-		if distPointToRay(claimedHitPosition, origin, dir) > lineTolerance then
-			return false, "claimed_hit_offline"
+		if hitDist > (range + 16) then
+			return false, "claimed_hit_too_far", nil, nil, nil, nil
+		end
+
+		local maxConeAngle = math.rad(tonumber(netCfg.maxConeAngle) or 6)
+		local expectedDir = toHit.Unit
+		local coneDot = math.clamp(dir:Dot(expectedDir), -1, 1)
+		local coneAngle = math.acos(coneDot)
+		if coneAngle > maxConeAngle then
+			return false, "direction_cone", nil, nil, nil, nil
+		end
+
+		local clampedDist = math.min(hitDist, range)
+		clampedHitPos = origin + expectedDir * clampedDist
+
+		local losTolerance = tonumber(netCfg.losTolerance) or tonumber(netCfg.recastHitPosTolerance) or 12
+		local function hasClearLine(lineStart: Vector3): boolean
+			local losDir = clampedHitPos - lineStart
+			local losDist = losDir.Magnitude
+			if losDist < 0.001 then
+				return true
+			end
+			local losResult = RaycastUtil.hitscan({char}, lineStart, losDir.Unit, losDist)
+			if not losResult then
+				return true
+			end
+			return (losResult.Position - clampedHitPos).Magnitude <= losTolerance
+		end
+
+		if not hasClearLine(muzzlePos) then
+			return false, "los_muzzle_blocked", nil, nil, nil, nil
+		end
+		if not hasClearLine(origin) then
+			return false, "los_origin_blocked", nil, nil, nil, nil
 		end
 	end
 
 	local result = RaycastUtil.hitscan({char}, origin, dir, range)
 	if claimedHitPosition and result then
 		local reconTolerance = tonumber(netCfg.recastHitPosTolerance) or 12
-		if (claimedHitPosition - result.Position).Magnitude > reconTolerance then
-			return false, "recast_mismatch"
+		local reconPos = clampedHitPos or claimedHitPosition
+		if (reconPos - result.Position).Magnitude > reconTolerance then
+			return false, "recast_mismatch", nil, nil, nil, nil
 		end
 	end
 
 	if claimedHitPosition and not result then
-		return false, "claimed_hit_without_geometry"
+		return false, "claimed_hit_without_geometry", nil, nil, nil, nil
 	end
 
-	return true, nil, origin, dir, result
+	if result and result.Instance then
+		local hum = RaycastUtil.findHumanoidFromHit(result.Instance)
+		if hum then
+			if hum == char:FindFirstChildOfClass("Humanoid") then
+				return false, "target_self", nil, nil, nil, nil
+			end
+			if DamageUtil.isFriendly(player, hum, (netCfg.allowFriendlyFire == true)) then
+				return false, "target_friendly", nil, nil, nil, nil
+			end
+		end
+	end
+
+	return true, nil, origin, dir, clampedHitPos, result
 end
 
 local function processShoot(player: Player, payload: any)
@@ -220,7 +303,8 @@ local function processShoot(player: Player, payload: any)
 	local muzzlePos = muzzle and muzzle.WorldPosition or hrp.Position
 
 	local netCfg = weaponCfg.net or {}
-	local ok, reason, origin, dir, validatedResult = validateClaimedHit(player, payload, char, hrp, weaponId, weaponCfg)
+	local shotId = getShotId(payload)
+	local ok, reason, origin, dir, _clampedHitPos, validatedResult = validateClaimedHit(player, payload, char, hrp, weaponId, weaponCfg)
 	if not ok or not origin or not dir then
 		logRejection(player, reason or "validation_unknown", payload)
 		local range = tonumber(weaponCfg.hitscan and weaponCfg.hitscan.range) or 800
@@ -244,7 +328,7 @@ local function processShoot(player: Player, payload: any)
 			hitPos = fallbackOrigin + fallbackDir * range,
 			hitNormal = Vector3.new(0, 1, 0),
 			didHit = false,
-			shotId = payload.shotId,
+			shotId = shotId,
 			rejected = true,
 			reason = reason,
 		})
@@ -267,7 +351,7 @@ local function processShoot(player: Player, payload: any)
 		local targetHum: Humanoid? = nil
 		local damageApplied = 0
 
-		if result and result.Instance then
+		if result and result.Instance and not hasProcessedDamageShot(player, shotId) then
 			local hum, _model = RaycastUtil.findHumanoidFromHit(result.Instance)
 			if hum and hum ~= shooterHum and hum.Health > 0 then
 				if not DamageUtil.isFriendly(player, hum, (netCfg.allowFriendlyFire == true)) then
@@ -283,6 +367,8 @@ local function processShoot(player: Player, payload: any)
 						damageApplied = math.max(0, pre - post)
 						didDamage = damageApplied > 0
 						targetHum = hum
+
+						markProcessedDamageShot(player, shotId)
 
 						if pre > 0 and post <= 0 then
 							local now = os.clock()
@@ -306,7 +392,7 @@ local function processShoot(player: Player, payload: any)
 			hitPos = hitPos,
 			hitNormal = hitNormal,
 			didHit = didHit,
-			shotId = payload.shotId,
+			shotId = shotId,
 			clientShotTime = payload.clientShotTime,
 			claimedHitPart = payload.claimedHitPart,
 			claimedHitPosition = payload.claimedHitPosition,
@@ -337,6 +423,92 @@ local function processShoot(player: Player, payload: any)
 		end
 	end
 end
+
+Net.ReportHit.OnServerEvent:Connect(function(player: Player, payload: any)
+	if type(payload) ~= "table" then return end
+
+	local weaponId = getWeaponId(player)
+	local weaponCfg = Weapons.Get(weaponId)
+
+	local char, shooterHum, hrp = getAlive(player)
+	if not char then return end
+
+	local shotId = getShotId(payload)
+	if hasProcessedDamageShot(player, shotId) then
+		return
+	end
+
+	local ok, reason, _, _, _, validatedResult = validateClaimedHit(player, payload, char, hrp, weaponId, weaponCfg)
+	if not ok then
+		logRejection(player, reason or "validation_unknown", payload)
+		return
+	end
+
+	if not validatedResult or not validatedResult.Instance then
+		return
+	end
+
+	local netCfg = weaponCfg.net or {}
+	local hum = RaycastUtil.findHumanoidFromHit(validatedResult.Instance)
+	if not hum or hum == shooterHum or hum.Health <= 0 then
+		logRejection(player, "target_invalid", payload)
+		return
+	end
+
+	if DamageUtil.isFriendly(player, hum, (netCfg.allowFriendlyFire == true)) then
+		logRejection(player, "target_friendly", payload)
+		return
+	end
+
+	local muzzle = findMuzzle(char, weaponCfg)
+	local muzzlePos = muzzle and muzzle.WorldPosition or hrp.Position
+	local baseDamage = tonumber(weaponCfg.hitscan and weaponCfg.hitscan.damage) or 0
+	local dist = (validatedResult.Position - muzzlePos).Magnitude
+	local dmg = DamageUtil.computeFalloff(baseDamage, dist, weaponCfg.hitscan and weaponCfg.hitscan.falloff)
+	dmg = math.max(0, math.floor(dmg + 0.5))
+	if dmg <= 0 then
+		return
+	end
+
+	local pre = hum.Health
+	hum:TakeDamage(dmg)
+	local post = hum.Health
+	local damageApplied = math.max(0, pre - post)
+	if damageApplied <= 0 then
+		return
+	end
+	markProcessedDamageShot(player, shotId)
+
+	local didKill = false
+	if pre > 0 and post <= 0 then
+		local now = os.clock()
+		local last = deathLock[hum] or 0
+		if now - last > 0.25 then
+			deathLock[hum] = now
+			didKill = true
+		end
+	end
+
+	Net.FXEvent:FireClient(player, {
+		type = "HitConfirm",
+		weaponId = weaponId,
+		kill = didKill,
+		damage = damageApplied,
+		targetName = hum.Parent and hum.Parent.Name or "Target",
+	})
+
+	if didKill then
+		Net.FXEvent:FireAllClients({
+			type = "KillFeed",
+			killerUserId = player.UserId,
+			killerName = player.DisplayName ~= "" and player.DisplayName or player.Name,
+			victimName = hum.Parent and hum.Parent.Name or "Victim",
+			weaponId = weaponId,
+			weaponDisplayName = weaponCfg.displayName or weaponId,
+			timestamp = os.time(),
+		})
+	end
+end)
 
 local function processReload(player: Player, payload: any)
 	local weaponId = getWeaponId(player)
@@ -418,6 +590,7 @@ Players.PlayerRemoving:Connect(function(player)
 	lastShotAt[player] = nil
 	ammoByPlayer[player] = nil
 	ammoHandshakeByPlayer[player] = nil
+	processedDamageShotByPlayer[player] = nil
 end)
 
 print("[GW] CombatService activo.")
