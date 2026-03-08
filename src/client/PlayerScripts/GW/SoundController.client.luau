@@ -103,13 +103,8 @@ LocalEffectsBus.OnShot(function(ev)
 	onShotEvent(ev, 0.95, 0.80)
 end)
 
-Net.FXEvent.OnClientEvent:Connect(function(ev)
+Net.ReplicateShot.OnClientEvent:Connect(function(ev)
 	if type(ev) ~= "table" then return end
-
-	local t = ev.type
-	if t ~= "Shot" and t ~= "Shoot" and t ~= "GunShot" then
-		return
-	end
 
 	local shooter = ev.shooterUserId
 	if typeof(shooter) == "number" and shooter == player.UserId then

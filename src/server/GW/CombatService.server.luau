@@ -332,6 +332,14 @@ local function processShoot(player: Player, payload: any)
 			rejected = true,
 			reason = reason,
 		})
+		Net.ReplicateShot:FireAllClients({
+			shooterUserId = player.UserId,
+			weaponId = weaponId,
+			startPos = muzzlePos,
+			hitPos = fallbackOrigin + fallbackDir * range,
+			didHit = false,
+			rejected = true,
+		})
 		return
 	end
 
@@ -396,6 +404,14 @@ local function processShoot(player: Player, payload: any)
 			clientShotTime = payload.clientShotTime,
 			claimedHitPart = payload.claimedHitPart,
 			claimedHitPosition = payload.claimedHitPosition,
+		})
+		Net.ReplicateShot:FireAllClients({
+			shooterUserId = player.UserId,
+			weaponId = weaponId,
+			startPos = muzzlePos,
+			hitPos = hitPos,
+			hitNormal = hitNormal,
+			didHit = didHit,
 		})
 
 		-- HitConfirm al tirador
