@@ -6,6 +6,9 @@ local Net = require(RS.GW.Shared.Net)
 local Weapons = require(RS.GW.Shared.WeaponRegistry)
 local RaycastUtil = require(RS.GW.Shared.RaycastUtil)
 local DamageUtil = require(RS.GW.Shared.DamageUtil)
+local Logger = require(RS.GW.Shared.Logger)
+
+local log = Logger.scoped("Combat")
 
 type AmmoState = {
 	mag: number,
@@ -20,6 +23,10 @@ local ammoHandshakeByPlayer: {[Player]: {[string]: boolean}} = {}
 local deathLock = setmetatable({}, {__mode="k"}) :: {[Humanoid]: number}
 local rejectionCountByReason: {[string]: {count: number, lastLogAt: number}} = {}
 local processedDamageShotByPlayer: {[Player]: {[string]: boolean}} = {}
+
+local function playerLabel(player: Player): string
+	return string.format("%s(%d)", player.Name, player.UserId)
+end
 
 local function getAlive(player: Player): (Model?, Humanoid?, BasePart?)
 	local char = player.Character
@@ -57,6 +64,14 @@ end
 local function fireAmmoUpdate(player: Player, weaponId: string, st: AmmoState)
 	ammoHandshakeByPlayer[player] = ammoHandshakeByPlayer[player] or {}
 	ammoHandshakeByPlayer[player][weaponId] = true
+	log:trace(string.format(
+		"Ammo update -> player=%s weaponId=%s mag=%d reserve=%d reloading=%s",
+		playerLabel(player),
+		tostring(weaponId),
+		st.mag,
+		st.reserve,
+		tostring(st.reloading)
+	))
 
 	Net.FXEvent:FireClient(player, {
 		type = "Ammo",
@@ -70,7 +85,10 @@ end
 
 local function ensureAmmoHandshake(player: Player, weaponId: string, weaponCfg: any)
 	ammoHandshakeByPlayer[player] = ammoHandshakeByPlayer[player] or {}
-	if ammoHandshakeByPlayer[player][weaponId] then return end
+	if ammoHandshakeByPlayer[player][weaponId] then
+		return
+	end
+	log:trace(string.format("Sending ammo handshake -> player=%s weaponId=%s", playerLabel(player), tostring(weaponId)))
 	local st = getAmmoState(player, weaponId, weaponCfg)
 	fireAmmoUpdate(player, weaponId, st)
 end
@@ -137,6 +155,13 @@ local function logRejection(player: Player, reason: string, payload: any)
 	state.lastLogAt = now
 
 	local shotId = if type(payload) == "table" and type(payload.shotId) == "string" then payload.shotId else "n/a"
+	log:warn(string.format(
+		"Shoot rejected -> player=%s shotId=%s reason=%s count=%d",
+		playerLabel(player),
+		tostring(shotId),
+		tostring(reason),
+		state.count
+	))
 	warn(string.format(
 		"[GW][CombatReject] player=%s userId=%d shotId=%s reason=%s count=%d",
 		player.Name,
@@ -282,18 +307,30 @@ end
 local function processShoot(player: Player, payload: any)
 	local weaponId = getWeaponId(player)
 	local weaponCfg = Weapons.Get(weaponId)
+	local shotId = getShotId(payload)
+	log:info(string.format(
+		"Shoot request received -> player=%s weaponId=%s shotId=%s",
+		playerLabel(player),
+		tostring(weaponId),
+		tostring(shotId)
+	))
 	ensureAmmoHandshake(player, weaponId, weaponCfg)
 
 	local char, shooterHum, hrp = getAlive(player)
-	if not char then return end
+	if not char then
+		log:warn("Shoot blocked: player not alive/valid character")
+		return
+	end
 
 	local st = getAmmoState(player, weaponId, weaponCfg)
 	if st.reloading and os.clock() < st.reloadEnd then
+		log:trace(string.format("Shoot blocked: reloading=true reloadEnd=%.3f", st.reloadEnd))
 		return
 	end
 	st.reloading = false
 
 	if st.mag <= 0 then
+		log:warn("Shoot blocked: no ammo in magazine")
 		fireAmmoUpdate(player, weaponId, st)
 		Net.FXEvent:FireClient(player, { type="DryFire", weaponId = weaponId })
 		return
@@ -303,9 +340,10 @@ local function processShoot(player: Player, payload: any)
 	local muzzlePos = muzzle and muzzle.WorldPosition or hrp.Position
 
 	local netCfg = weaponCfg.net or {}
-	local shotId = getShotId(payload)
+	log:trace("Shoot validation: cadence/state/plausibility started")
 	local ok, reason, origin, dir, _clampedHitPos, validatedResult = validateClaimedHit(player, payload, char, hrp, weaponId, weaponCfg)
 	if not ok or not origin or not dir then
+		log:warn(string.format("Shoot rejected by validation reason=%s shotId=%s", tostring(reason), tostring(shotId)))
 		logRejection(player, reason or "validation_unknown", payload)
 		local range = tonumber(weaponCfg.hitscan and weaponCfg.hitscan.range) or 800
 		local fallbackOrigin = hrp.Position
@@ -342,9 +380,11 @@ local function processShoot(player: Player, payload: any)
 		})
 		return
 	end
+	log:info(string.format("Shoot validation passed shotId=%s", tostring(shotId)))
 
 	-- gastar bala (server-authoritative)
 	st.mag -= 1
+	log:trace(string.format("Ammo consumed -> mag=%d reserve=%d", st.mag, st.reserve))
 	fireAmmoUpdate(player, weaponId, st)
 
 	if weaponCfg.kind == "Hitscan" then
@@ -353,6 +393,11 @@ local function processShoot(player: Player, payload: any)
 		local hitPos = result and result.Position or (origin + dir * range)
 		local hitNormal = result and result.Normal or Vector3.new(0,1,0)
 		local didHit = (result ~= nil)
+		if didHit then
+			log:info(string.format("Raycast result=hit shotId=%s", tostring(shotId)))
+		else
+			log:info(string.format("Raycast result=miss shotId=%s", tostring(shotId)))
+		end
 
 		local didDamage = false
 		local didKill = false
@@ -416,6 +461,7 @@ local function processShoot(player: Player, payload: any)
 
 		-- HitConfirm al tirador
 		if didDamage then
+			log:info(string.format("Damage applied -> shotId=%s damage=%d kill=%s", tostring(shotId), damageApplied, tostring(didKill)))
 			Net.FXEvent:FireClient(player, {
 				type = "HitConfirm",
 				weaponId = weaponId,
@@ -437,41 +483,55 @@ local function processShoot(player: Player, payload: any)
 				timestamp = os.time(),
 			})
 		end
+	else
+		log:warn(string.format("Weapon kind not handled by processShoot: %s", tostring(weaponCfg.kind)))
 	end
 end
 
 Net.ReportHit.OnServerEvent:Connect(function(player: Player, payload: any)
-	if type(payload) ~= "table" then return end
+	if type(payload) ~= "table" then
+		log:warn("ReportHit ignored: payload is not table")
+		return
+	end
 
 	local weaponId = getWeaponId(player)
 	local weaponCfg = Weapons.Get(weaponId)
+	local shotId = getShotId(payload)
+	log:trace(string.format("ReportHit received -> player=%s weaponId=%s shotId=%s", playerLabel(player), tostring(weaponId), tostring(shotId)))
 
 	local char, shooterHum, hrp = getAlive(player)
-	if not char then return end
+	if not char then
+		log:trace("ReportHit ignored: player not alive")
+		return
+	end
 
-	local shotId = getShotId(payload)
 	if hasProcessedDamageShot(player, shotId) then
+		log:trace(string.format("ReportHit ignored: shot already processed shotId=%s", tostring(shotId)))
 		return
 	end
 
 	local ok, reason, _, _, _, validatedResult = validateClaimedHit(player, payload, char, hrp, weaponId, weaponCfg)
 	if not ok then
+		log:warn(string.format("ReportHit validation failed reason=%s shotId=%s", tostring(reason), tostring(shotId)))
 		logRejection(player, reason or "validation_unknown", payload)
 		return
 	end
 
 	if not validatedResult or not validatedResult.Instance then
+		log:trace(string.format("ReportHit had no validated hit instance shotId=%s", tostring(shotId)))
 		return
 	end
 
 	local netCfg = weaponCfg.net or {}
 	local hum = RaycastUtil.findHumanoidFromHit(validatedResult.Instance)
 	if not hum or hum == shooterHum or hum.Health <= 0 then
+		log:warn(string.format("ReportHit target invalid shotId=%s", tostring(shotId)))
 		logRejection(player, "target_invalid", payload)
 		return
 	end
 
 	if DamageUtil.isFriendly(player, hum, (netCfg.allowFriendlyFire == true)) then
+		log:warn(string.format("ReportHit target rejected friendly shotId=%s", tostring(shotId)))
 		logRejection(player, "target_friendly", payload)
 		return
 	end
@@ -483,6 +543,7 @@ Net.ReportHit.OnServerEvent:Connect(function(player: Player, payload: any)
 	local dmg = DamageUtil.computeFalloff(baseDamage, dist, weaponCfg.hitscan and weaponCfg.hitscan.falloff)
 	dmg = math.max(0, math.floor(dmg + 0.5))
 	if dmg <= 0 then
+		log:trace(string.format("ReportHit damage resolved to 0 shotId=%s", tostring(shotId)))
 		return
 	end
 
@@ -491,9 +552,11 @@ Net.ReportHit.OnServerEvent:Connect(function(player: Player, payload: any)
 	local post = hum.Health
 	local damageApplied = math.max(0, pre - post)
 	if damageApplied <= 0 then
+		log:trace(string.format("ReportHit applied no health delta shotId=%s", tostring(shotId)))
 		return
 	end
 	markProcessedDamageShot(player, shotId)
+	log:info(string.format("ReportHit damage applied -> shotId=%s damage=%d", tostring(shotId), damageApplied))
 
 	local didKill = false
 	if pre > 0 and post <= 0 then
@@ -529,31 +592,49 @@ end)
 local function processReload(player: Player, payload: any)
 	local weaponId = getWeaponId(player)
 	local weaponCfg = Weapons.Get(weaponId)
+	log:trace(string.format("Reload request received -> player=%s weaponId=%s", playerLabel(player), tostring(weaponId)))
 	ensureAmmoHandshake(player, weaponId, weaponCfg)
 	local char, hum, hrp = getAlive(player)
-	if not char then return end
+	if not char then
+		log:warn("Reload blocked: player not alive")
+		return
+	end
 
 	local st = getAmmoState(player, weaponId, weaponCfg)
 
 	local magSize = tonumber(weaponCfg.ammo and weaponCfg.ammo.magSize) or 30
 	local reloadTime = tonumber(weaponCfg.ammo and weaponCfg.ammo.reloadTime) or 2.0
 
-	if st.reloading and os.clock() < st.reloadEnd then return end
-	if st.mag >= magSize then return end
-	if st.reserve <= 0 then return end
+	if st.reloading and os.clock() < st.reloadEnd then
+		log:trace("Reload blocked: already reloading")
+		return
+	end
+	if st.mag >= magSize then
+		log:trace("Reload blocked: mag already full")
+		return
+	end
+	if st.reserve <= 0 then
+		log:trace("Reload blocked: reserve empty")
+		return
+	end
 
 	st.reloading = true
 	st.reloadEnd = os.clock() + reloadTime
+	log:info(string.format("Reload started -> player=%s weaponId=%s reloadTime=%.2f", playerLabel(player), tostring(weaponId), reloadTime))
 	fireAmmoUpdate(player, weaponId, st)
 
 	Net.FXEvent:FireClient(player, { type="ReloadStart", weaponId = weaponId, reloadTime = reloadTime })
 
 	task.delay(reloadTime, function()
-		if not player.Parent then return end
+		if not player.Parent then
+			log:trace("Reload finalize skipped: player no longer valid")
+			return
+		end
 		local char2, hum2 = getAlive(player)
 		if not char2 then
 			st.reloading = false
 			fireAmmoUpdate(player, weaponId, st)
+			log:trace("Reload canceled: player dead/invalid at finalize")
 			return
 		end
 
@@ -566,28 +647,50 @@ local function processReload(player: Player, payload: any)
 		st.reloadEnd = 0
 		fireAmmoUpdate(player, weaponId, st)
 		Net.FXEvent:FireClient(player, { type="ReloadEnd", weaponId = weaponId })
+		log:info(string.format("Reload completed -> player=%s weaponId=%s mag=%d reserve=%d", playerLabel(player), tostring(weaponId), st.mag, st.reserve))
 	end)
 end
 
 Net.CombatRequest.OnServerEvent:Connect(function(player: Player, payload: any)
-	if type(payload) ~= "table" then return end
+	if type(payload) ~= "table" then
+		log:warn("CombatRequest ignored: payload is not table")
+		return
+	end
 
 	local weaponId = getWeaponId(player)
 	local weaponCfg = Weapons.Get(weaponId)
 	ensureAmmoHandshake(player, weaponId, weaponCfg)
 
 	local action = payload.action
+	local shotId = getShotId(payload)
+	log:info(string.format(
+		"CombatRequest received -> player=%s action=%s weaponId=%s shotId=%s payloadWeaponId=%s",
+		playerLabel(player),
+		tostring(action),
+		tostring(weaponId),
+		tostring(shotId),
+		tostring(payload.weaponId)
+	))
 	if action == "Shoot" then
 		processShoot(player, payload)
 	elseif action == "Reload" then
 		processReload(player, payload)
+	elseif action == "DryTrigger" then
+		log:trace(string.format("DryTrigger received -> player=%s weaponId=%s reason=%s", playerLabel(player), tostring(weaponId), tostring(payload.reason)))
+	else
+		log:warn(string.format("CombatRequest ignored: unknown action=%s", tostring(action)))
 	end
 end)
 
-Players.PlayerAdded:Connect(function(player)
+local function bindPlayer(player: Player)
+	log:trace("Binding combat state for player " .. playerLabel(player))
 	player.CharacterAdded:Connect(function()
+		log:trace("CharacterAdded -> ammo handshake scheduled for " .. playerLabel(player))
 		task.defer(function()
-			if not player.Parent then return end
+			if not player.Parent then
+				log:trace("Skipped deferred handshake: player no longer valid")
+				return
+			end
 			local weaponId = getWeaponId(player)
 			local weaponCfg = Weapons.Get(weaponId)
 			ensureAmmoHandshake(player, weaponId, weaponCfg)
@@ -595,12 +698,25 @@ Players.PlayerAdded:Connect(function(player)
 	end)
 
 	player:GetAttributeChangedSignal("WeaponId"):Connect(function()
-		if not player.Parent then return end
+		if not player.Parent then
+			log:trace("WeaponId changed but player no longer valid")
+			return
+		end
+		log:trace("WeaponId attribute changed on server for " .. playerLabel(player))
 		local weaponId = getWeaponId(player)
 		local weaponCfg = Weapons.Get(weaponId)
 		ensureAmmoHandshake(player, weaponId, weaponCfg)
 	end)
-end)
+end
+
+Players.PlayerAdded:Connect(bindPlayer)
+
+for _, p in ipairs(Players:GetPlayers()) do
+	bindPlayer(p)
+	local weaponId = getWeaponId(p)
+	local weaponCfg = Weapons.Get(weaponId)
+	ensureAmmoHandshake(p, weaponId, weaponCfg)
+end
 
 Players.PlayerRemoving:Connect(function(player)
 	lastShotAt[player] = nil
@@ -609,4 +725,4 @@ Players.PlayerRemoving:Connect(function(player)
 	processedDamageShotByPlayer[player] = nil
 end)
 
-print("[GW] CombatService activo.")
+log:info("CombatService active (shoot tracing enabled)")
