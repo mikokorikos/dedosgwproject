@@ -4,8 +4,26 @@
     "$className": "DataModel",
     "ReplicatedStorage": {
       "$className": "ReplicatedStorage",
-      "GWShared": {
-        "$path": "src/shared"
+      "GW": {
+        "$path": "src/shared/GW",
+        "Remotes": {
+          "$className": "Folder",
+          "CombatRequest": {
+            "$className": "RemoteEvent"
+          },
+          "ReportHit": {
+            "$className": "RemoteEvent"
+          },
+          "ReplicateShot": {
+            "$className": "RemoteEvent"
+          },
+          "AbilityRequest": {
+            "$className": "RemoteEvent"
+          },
+          "FXEvent": {
+            "$className": "RemoteEvent"
+          }
+        }
       }
     },
     "ServerScriptService": {

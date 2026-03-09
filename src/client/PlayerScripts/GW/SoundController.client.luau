@@ -1,6 +1,5 @@
 --!strict
 local Players = game:GetService("Players")
-local UIS = game:GetService("UserInputService")
 local RS = game:GetService("ReplicatedStorage")
 local Debris = game:GetService("Debris")
 local Workspace = game:GetService("Workspace")
@@ -9,6 +8,7 @@ local player = Players.LocalPlayer
 local Net = require(RS.GW.Shared.Net)
 local Weapons = require(RS.GW.Shared.WeaponRegistry)
 local AssetResolver = require(RS.GW.Shared.AssetResolver)
+local LocalEffectsBus = require(script.Parent.LocalEffectsBus)
 
 local SoundsRoot = RS.GW.Assets:WaitForChild("Sounds")
 
@@ -17,12 +17,6 @@ if not worldFolder then
 	worldFolder = Instance.new("Folder")
 	worldFolder.Name = "_GW_WorldSFX"
 	worldFolder.Parent = Workspace
-end
-
-local lastLocalShot = 0
-
-local function isTyping()
-	return UIS:GetFocusedTextBox() ~= nil
 end
 
 local function makeAnchor(pos: Vector3)
@@ -93,66 +87,31 @@ local function playShotSoundAt(pos: Vector3, weaponId: string, volume: number)
 	Debris:AddItem(a, cleanup)
 end
 
--- ✅ LOCAL INSTANT: siempre oyes tu rifle
-local function getLocalWeaponId(): string
-	local charId = player:GetAttribute("CharacterId")
-	-- si tu CharacterRegistry expone weaponId por char, mejor, pero fallback SoldierRifle
-	return "SoldierRifle"
-end
-
-local function getLocalMuzzlePos(): Vector3?
-	local char = player.Character
-	if not char then return nil end
-	-- busca un Muzzle attachment en cualquier lado (rápido)
-	local muzzle = char:FindFirstChild("Muzzle", true)
-	if muzzle and muzzle:IsA("Attachment") then
-		return muzzle.WorldPosition
-	end
-	-- fallback HRP
-	local hrp = char:FindFirstChild("HumanoidRootPart")
-	if hrp and hrp:IsA("BasePart") then return hrp.Position end
-	return nil
-end
-
-UIS.InputBegan:Connect(function(input, gp)
-	if gp or isTyping() then return end
-	if input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
-
-	-- throttle según RPM config
-	local weaponId = getLocalWeaponId()
-	local cfg = Weapons.Get(weaponId)
-	local rpm = (cfg.fire and tonumber(cfg.fire.rpm)) or 420
-	local interval = 60 / math.max(rpm, 1)
-	local now = os.clock()
-	if (now - lastLocalShot) < interval then return end
-	lastLocalShot = now
-
-	local pos = getLocalMuzzlePos()
-	if pos then
-		playShotSoundAt(pos, weaponId, 0.95)
-	end
-end)
-
--- ✅ REMOTE: oyes a otros si llega FXEvent
-Net.FXEvent.OnClientEvent:Connect(function(ev)
+local function onShotEvent(ev: any, localVolume: number, remoteVolume: number)
 	if type(ev) ~= "table" then return end
-
-	-- acepta "Shot" o variantes
-	local t = ev.type
-	if t ~= "Shot" and t ~= "Shoot" and t ~= "GunShot" then
-		return
-	end
-
-	local shooter = ev.shooterUserId
-	if typeof(shooter) == "number" and shooter == player.UserId then
-		return -- no duplique tu local
-	end
-
 	local pos = resolveStartPos(ev)
 	if not pos then return end
 
+	local shooter = ev.shooterUserId
+	local isLocalShooter = typeof(shooter) == "number" and shooter == player.UserId
+	local volume = if isLocalShooter then localVolume else remoteVolume
 	local weaponId = resolveWeaponId(ev)
-	playShotSoundAt(pos, weaponId, 0.80)
+	playShotSoundAt(pos, weaponId, volume)
+end
+
+LocalEffectsBus.OnShot(function(ev)
+	onShotEvent(ev, 0.95, 0.80)
 end)
 
-print("[GW] SoundController (local+remote) activo.")
+Net.ReplicateShot.OnClientEvent:Connect(function(ev)
+	if type(ev) ~= "table" then return end
+
+	local shooter = ev.shooterUserId
+	if typeof(shooter) == "number" and shooter == player.UserId then
+		return -- evita duplicado del evento local instantáneo
+	end
+
+	onShotEvent(ev, 0.95, 0.80)
+end)
+
+print("[GW] SoundController (local bus + remote) activo.")

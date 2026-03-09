@@ -6,6 +6,7 @@ local Workspace = game:GetService("Workspace")
 
 local player = Players.LocalPlayer
 local Net = require(RS.GW.Shared.Net)
+local LocalEffectsBus = require(script.Parent.LocalEffectsBus)
 
 local okW, Weapons = pcall(require, RS.GW.Shared:WaitForChild("WeaponRegistry"))
 if not okW then
@@ -259,11 +260,22 @@ end
 Net.FXEvent.OnClientEvent:Connect(function(ev)
 	if type(ev) ~= "table" then return end
 	local t = ev.type
-	if t == "Shot" then
-		renderShot(ev)
-	elseif t == "Explosion" then
+	if t == "Explosion" then
 		renderExplosion(ev)
 	end
+end)
+
+Net.ReplicateShot.OnClientEvent:Connect(function(ev)
+	if type(ev) ~= "table" then return end
+	local shooter = ev.shooterUserId
+	if typeof(shooter) == "number" and shooter == player.UserId then
+		return
+	end
+	renderShot(ev)
+end)
+
+LocalEffectsBus.OnShot(function(ev)
+	renderShot(ev)
 end)
 
 print("[GW] FXController (paths+fallback) activo.")

@@ -16,6 +16,8 @@ export type CombatRequestPayload = {
 
 return {
 	CombatRequest = Remotes:WaitForChild("CombatRequest") :: RemoteEvent,
+	ReportHit = Remotes:WaitForChild("ReportHit") :: RemoteEvent,
+	ReplicateShot = Remotes:WaitForChild("ReplicateShot") :: RemoteEvent,
 	AbilityRequest = Remotes:WaitForChild("AbilityRequest") :: RemoteEvent,
 	FXEvent = Remotes:WaitForChild("FXEvent") :: RemoteEvent,
 }
