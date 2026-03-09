@@ -6,6 +6,7 @@ local Remotes = GW:WaitForChild("Remotes")
 export type CombatRequestPayload = {
 	action: "Shoot" | "Reload" | "DryTrigger",
 	weaponId: string?,
+	reason: string?,
 	shotId: string?,
 	clientShotTime: number?,
 	origin: Vector3?,

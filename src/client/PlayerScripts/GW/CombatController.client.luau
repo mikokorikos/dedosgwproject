@@ -24,6 +24,9 @@ local shotSequence = 0
 local spreadRng = Random.new()
 local lastRateBlockLogAt = 0
 local RATE_BLOCK_LOG_INTERVAL = 0.25
+local lastAmmoSyncRequestAt = 0
+local AMMO_SYNC_REQUEST_COOLDOWN = 0.20
+local pendingFirstShotAfterInit = false
 
 local localAmmo = {
 	initialized = false,
@@ -33,6 +36,21 @@ local localAmmo = {
 	reloadEnd = 0,
 	weaponId = Weapons.DefaultId,
 }
+
+local function requestAmmoSync(reason: string)
+	local now = os.clock()
+	if now - lastAmmoSyncRequestAt < AMMO_SYNC_REQUEST_COOLDOWN then
+		log:trace(string.format("Ammo sync request throttled reason=%s", tostring(reason)))
+		return
+	end
+	lastAmmoSyncRequestAt = now
+	Net.CombatRequest:FireServer({
+		action = "DryTrigger",
+		weaponId = localAmmo.weaponId,
+		reason = reason,
+	})
+	log:info(string.format("DryTrigger sent to request ammo sync reason=%s weaponId=%s", tostring(reason), tostring(localAmmo.weaponId)))
+end
 
 local function ammoSnapshot(): string
 	return string.format(
@@ -51,10 +69,14 @@ local function canUseAmmoState(): boolean
 end
 
 local function resetAmmoInitializationForWeapon()
+	local previousInitialized = localAmmo.initialized
 	localAmmo.initialized = false
+	localAmmo.mag = 0
+	localAmmo.reserve = 0
 	localAmmo.reloading = false
 	localAmmo.reloadEnd = 0
-	log:trace("Ammo initialization reset for weapon change")
+	log:trace(string.format("Ammo initialization reset (prevInitialized=%s)", tostring(previousInitialized)))
+	pendingFirstShotAfterInit = false
 end
 
 local function getWeaponCfg()
@@ -118,19 +140,15 @@ local function isTyping(): boolean
 	return typing
 end
 
-local function tryShoot(): "ok" | "blocked_reload" | "blocked_ammo" | "no_camera"
+local function tryShoot(): "ok" | "blocked_uninitialized" | "blocked_reload" | "blocked_ammo" | "no_camera"
 	local weaponCfg = getWeaponCfg()
 	log:trace("Shoot attempt: " .. ammoSnapshot())
 
 	if not canUseAmmoState() then
 		log:warn("Shoot blocked: local ammo state not initialized")
-		Net.CombatRequest:FireServer({
-			action = "DryTrigger",
-			weaponId = localAmmo.weaponId,
-			reason = "AmmoUninitialized",
-		})
-		log:trace("DryTrigger sent to request ammo sync")
-		return "blocked_reload"
+		pendingFirstShotAfterInit = true
+		requestAmmoSync("AmmoUninitialized")
+		return "blocked_uninitialized"
 	end
 
 	local now = os.clock()
@@ -165,6 +183,10 @@ local function tryShoot(): "ok" | "blocked_reload" | "blocked_ammo" | "no_camera
 	shotSequence += 1
 	local shotId = string.format("%d-%d", player.UserId, shotSequence)
 	log:info("shotId generated = " .. shotId)
+	if pendingFirstShotAfterInit then
+		log:info("First successful shot after ammo initialization")
+		pendingFirstShotAfterInit = false
+	end
 
 	LocalEffectsBus.EmitShot({
 		type = "Shot",
@@ -251,10 +273,12 @@ local function stopFiringLoop()
 	firingState.isFiringLoopActive = false
 end
 
-local function onShotAttempt(shotResult: "ok" | "blocked_reload" | "blocked_ammo" | "no_camera", now: number)
+local function onShotAttempt(shotResult: "ok" | "blocked_uninitialized" | "blocked_reload" | "blocked_ammo" | "no_camera", now: number)
 	log:trace("Shot attempt result = " .. tostring(shotResult))
 	if shotResult == "no_camera" then
 		firingState.nextShotAt = now + NO_CAMERA_BACKOFF
+	elseif shotResult == "blocked_uninitialized" then
+		firingState.nextShotAt = now + 0.10
 	else
 		firingState.nextShotAt = now + firingState.fireInterval
 	end
@@ -282,11 +306,15 @@ player.CharacterAdded:Connect(function(character)
 	log:trace("CharacterAdded in CombatController")
 	stopFiringLoop()
 	resetAmmoInitializationForWeapon()
+	getWeaponCfg()
+	requestAmmoSync("CharacterAdded")
 	bindHumanoidDeath(character)
 end)
 
 if player.Character then
 	bindHumanoidDeath(player.Character)
+	getWeaponCfg()
+	requestAmmoSync("InitialBootstrap")
 end
 
 player:GetAttributeChangedSignal("WeaponId"):Connect(function()
@@ -294,6 +322,7 @@ player:GetAttributeChangedSignal("WeaponId"):Connect(function()
 	stopFiringLoop()
 	getWeaponCfg()
 	resetAmmoInitializationForWeapon()
+	requestAmmoSync("WeaponChanged")
 end)
 
 UIS.InputBegan:Connect(function(input, gameProcessed)
@@ -383,11 +412,15 @@ Net.FXEvent.OnClientEvent:Connect(function(ev)
 	end
 	if ev.type == "Ammo" then
 		if ev.weaponId == localAmmo.weaponId then
+			local wasInitialized = localAmmo.initialized
 			localAmmo.initialized = true
 			localAmmo.mag = tonumber(ev.mag) or localAmmo.mag
 			localAmmo.reserve = tonumber(ev.reserve) or localAmmo.reserve
 			localAmmo.reloading = (ev.reloading == true)
 			localAmmo.reloadEnd = tonumber(ev.reloadEnd) or 0
+			if not wasInitialized then
+				log:info(string.format("Ammo initialized=true via server sync weaponId=%s", tostring(localAmmo.weaponId)))
+			end
 			log:trace("Ammo sync received: " .. ammoSnapshot())
 		else
 			log:trace(string.format("Ammo sync ignored due weapon mismatch (event=%s local=%s)", tostring(ev.weaponId), tostring(localAmmo.weaponId)))
@@ -403,4 +436,5 @@ Net.FXEvent.OnClientEvent:Connect(function(ev)
 	end
 end)
 
+log:trace("Local ammo state created: " .. ammoSnapshot())
 log:info("CombatController ready (Shoot + Reload tracing enabled)")

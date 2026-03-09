@@ -58,6 +58,13 @@ local function getAmmoState(player: Player, weaponId: string, weaponCfg: any): A
 		reloadEnd = 0,
 	}
 	ammoByPlayer[player][weaponId] = st
+	log:info(string.format(
+		"Ammo state created -> player=%s weaponId=%s mag=%d reserve=%d",
+		playerLabel(player),
+		tostring(weaponId),
+		st.mag,
+		st.reserve
+	))
 	return st
 end
 
@@ -89,6 +96,17 @@ local function ensureAmmoHandshake(player: Player, weaponId: string, weaponCfg: 
 		return
 	end
 	log:trace(string.format("Sending ammo handshake -> player=%s weaponId=%s", playerLabel(player), tostring(weaponId)))
+	local st = getAmmoState(player, weaponId, weaponCfg)
+	fireAmmoUpdate(player, weaponId, st)
+end
+
+local function forceAmmoSync(player: Player, weaponId: string, weaponCfg: any, reason: string)
+	log:info(string.format(
+		"Force ammo sync -> player=%s weaponId=%s reason=%s",
+		playerLabel(player),
+		tostring(weaponId),
+		tostring(reason)
+	))
 	local st = getAmmoState(player, weaponId, weaponCfg)
 	fireAmmoUpdate(player, weaponId, st)
 end
@@ -677,6 +695,7 @@ Net.CombatRequest.OnServerEvent:Connect(function(player: Player, payload: any)
 		processReload(player, payload)
 	elseif action == "DryTrigger" then
 		log:trace(string.format("DryTrigger received -> player=%s weaponId=%s reason=%s", playerLabel(player), tostring(weaponId), tostring(payload.reason)))
+		forceAmmoSync(player, weaponId, weaponCfg, tostring(payload.reason))
 	else
 		log:warn(string.format("CombatRequest ignored: unknown action=%s", tostring(action)))
 	end
@@ -693,7 +712,7 @@ local function bindPlayer(player: Player)
 			end
 			local weaponId = getWeaponId(player)
 			local weaponCfg = Weapons.Get(weaponId)
-			ensureAmmoHandshake(player, weaponId, weaponCfg)
+			forceAmmoSync(player, weaponId, weaponCfg, "CharacterAdded")
 		end)
 	end)
 
@@ -705,7 +724,7 @@ local function bindPlayer(player: Player)
 		log:trace("WeaponId attribute changed on server for " .. playerLabel(player))
 		local weaponId = getWeaponId(player)
 		local weaponCfg = Weapons.Get(weaponId)
-		ensureAmmoHandshake(player, weaponId, weaponCfg)
+		forceAmmoSync(player, weaponId, weaponCfg, "WeaponChanged")
 	end)
 end
 
@@ -715,7 +734,7 @@ for _, p in ipairs(Players:GetPlayers()) do
 	bindPlayer(p)
 	local weaponId = getWeaponId(p)
 	local weaponCfg = Weapons.Get(weaponId)
-	ensureAmmoHandshake(p, weaponId, weaponCfg)
+	forceAmmoSync(p, weaponId, weaponCfg, "ExistingPlayerBootstrap")
 end
 
 Players.PlayerRemoving:Connect(function(player)
