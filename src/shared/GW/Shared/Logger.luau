@@ -97,6 +97,7 @@ local function output(levelName: string, line: string)
 end
 
 local function emit(scope: any, level: any, message: any, ...: any)
+	local extras = table.pack(...)
 	local ok, err = pcall(function()
 		local scopeName = normalizeScope(scope)
 		local levelName = normalizeLevel(level)
@@ -105,7 +106,7 @@ local function emit(scope: any, level: any, message: any, ...: any)
 		end
 
 		local basePrefix = string.format("[GW][%s][%s]", scopeName, runtimeSide())
-		local msg = buildMessage(message, ...)
+		local msg = buildMessage(message, table.unpack(extras, 1, extras.n))
 		local line = basePrefix .. " " .. msg
 		if levelName == "WARN" or levelName == "ERROR" then
 			line = string.format("%s[%s] %s", basePrefix, levelName, msg)
@@ -161,6 +162,22 @@ end
 
 function Logger.scoped(scope: any): ScopedLogger
 	return scoped(scope)
+end
+
+function Logger.trace(...: any)
+	emit("General", "TRACE", ...)
+end
+
+function Logger.info(...: any)
+	emit("General", "INFO", ...)
+end
+
+function Logger.warn(...: any)
+	emit("General", "WARN", ...)
+end
+
+function Logger.error(...: any)
+	emit("General", "ERROR", ...)
 end
 
 return Logger
