@@ -171,6 +171,18 @@ local function validateAbilityConfig(moduleName: string, cfg: any)
 	validateBoolean(errors, "isDefault", cfg.isDefault, false)
 	validateNumber(errors, "cooldown", cfg.cooldown, false, 0, true)
 
+	validateString(errors, "clientAnimId", cfg.clientAnimId, false)
+	if type(cfg.clientAnimId) == "string" and cfg.clientAnimId ~= "" then
+		local validAnimId = string.match(cfg.clientAnimId, "^rbxassetid://%d+$") ~= nil
+			or string.match(cfg.clientAnimId, "^%d+$") ~= nil
+		if not validAnimId then
+			pushError(errors, "clientAnimId", "must be a numeric id or 'rbxassetid://<id>'")
+		end
+	end
+	validateBoolean(errors, "useMarker", cfg.useMarker, false)
+	validateString(errors, "launchMarkerName", cfg.launchMarkerName, false)
+	validateNumber(errors, "fallbackLaunchDelay", cfg.fallbackLaunchDelay, false, 0, true)
+
 	validateNumber(errors, "projectileSpeed", cfg.projectileSpeed, false, 0, false)
 	validateNumber(errors, "maxDistance", cfg.maxDistance, false, 0, false)
 	validateNumber(errors, "lifetime", cfg.lifetime, false, 0, false)
@@ -245,3 +257,4 @@ return {
 	validateAbilityConfig = validateAbilityConfig,
 	runStaticAudit = runStaticAudit,
 }
+

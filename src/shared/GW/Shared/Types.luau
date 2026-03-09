@@ -95,6 +95,11 @@ export type AbilityConfig = {
 	launchSoundName: string?,
 	flightLoopSoundName: string?,
 
+	clientAnimId: string?,
+	useMarker: boolean?,
+	launchMarkerName: string?,
+	fallbackLaunchDelay: number?,
+
 	explosionRadius: number?,
 	explosionMaxDamage: number?,
 	explosionMinDamage: number?,

@@ -24,6 +24,11 @@ local config: AbilityConfig = {
 	launchSoundName = "RocketLaunchSound",
 	flightLoopSoundName = "RocketFlightLoop",
 
+	clientAnimId = "rbxassetid://81601740746075",
+	useMarker = true,
+	launchMarkerName = "Launch",
+	fallbackLaunchDelay = 0.35,
+
 	explosionRadius = 12,
 	explosionMaxDamage = 45,
 	explosionMinDamage = 10,
@@ -40,3 +45,4 @@ local config: AbilityConfig = {
 }
 
 return config
+

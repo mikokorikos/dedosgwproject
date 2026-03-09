@@ -5,6 +5,7 @@
     "ReplicatedStorage": {
       "$className": "ReplicatedStorage",
       "GW": {
+        "$ignoreUnknownInstances": true,
         "$path": "src/shared/GW",
         "Remotes": {
           "$className": "Folder",
