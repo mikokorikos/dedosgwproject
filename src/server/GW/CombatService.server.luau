@@ -23,6 +23,11 @@ local ammoHandshakeByPlayer: {[Player]: {[string]: boolean}} = {}
 local deathLock = setmetatable({}, {__mode="k"}) :: {[Humanoid]: number}
 local rejectionCountByReason: {[string]: {count: number, lastLogAt: number}} = {}
 local processedDamageShotByPlayer: {[Player]: {[string]: boolean}} = {}
+local acceptedShotsByPlayer: {[Player]: {[string]: number}} = {}
+local acceptedShotPruneAtByPlayer: {[Player]: number} = {}
+
+local ACCEPTED_SHOT_TTL = 2.5
+local ACCEPTED_SHOT_PRUNE_INTERVAL = 1.0
 
 local function playerLabel(player: Player): string
 	return string.format("%s(%d)", player.Name, player.UserId)
@@ -140,21 +145,54 @@ local function sanitizeDir(dir: any): Vector3?
 	return dir.Unit
 end
 
-local function findMuzzle(char: Model, weaponCfg: any): Attachment?
+local function findMuzzle(char: Model, weaponCfg: any): (Attachment?, string)
 	local mount = weaponCfg.mount or {}
-	local gunName = mount.gunModelName or "SoldierGun"
-	local muzzleName = mount.muzzleAttachmentName or "Muzzle"
+	local gunName = tostring(mount.gunModelName or "SoldierGun")
+	local muzzleName = tostring(mount.muzzleAttachmentName or "Muzzle")
+
+	local namedInGun: Attachment? = nil
+	local namedFallback: Attachment? = nil
+	local genericInGun: Attachment? = nil
+	local genericFallback: Attachment? = nil
 
 	for _, inst in ipairs(char:GetDescendants()) do
-		if inst:IsA("Model") and inst.Name == gunName then
-			for _, d in ipairs(inst:GetDescendants()) do
-				if d:IsA("Attachment") and d.Name == muzzleName then
-					return d
+		if inst:IsA("Attachment") then
+			local attachmentName = inst.Name
+			local attachmentNameLower = string.lower(attachmentName)
+			local inConfiguredGun = inst:FindFirstAncestor(gunName) ~= nil
+
+			if attachmentName == muzzleName then
+				if inConfiguredGun then
+					namedInGun = namedInGun or inst
+				else
+					namedFallback = namedFallback or inst
+				end
+			end
+
+			if attachmentNameLower == "muzzle" or attachmentNameLower == "muzzleattachment" or attachmentNameLower == "muzzlepoint" then
+				if inConfiguredGun then
+					genericInGun = genericInGun or inst
+				else
+					genericFallback = genericFallback or inst
 				end
 			end
 		end
 	end
-	return nil
+
+	if namedInGun then
+		return namedInGun, "named_in_gun"
+	end
+	if genericInGun then
+		return genericInGun, "generic_in_gun"
+	end
+	if namedFallback then
+		return namedFallback, "named_fallback"
+	end
+	if genericFallback then
+		return genericFallback, "generic_fallback"
+	end
+
+	return nil, "missing"
 end
 
 local function logRejection(player: Player, reason: string, payload: any)
@@ -209,26 +247,127 @@ local function markProcessedDamageShot(player: Player, shotId: string?)
 	if not shotId then return end
 	processedDamageShotByPlayer[player] = processedDamageShotByPlayer[player] or {}
 	processedDamageShotByPlayer[player][shotId] = true
+	if acceptedShotsByPlayer[player] then
+		acceptedShotsByPlayer[player][shotId] = nil
+	end
 end
-local function validateClaimedHit(player: Player, payload: any, char: Model, hrp: BasePart, weaponId: string, weaponCfg: any): (boolean, string?, Vector3?, Vector3?, Vector3?, RaycastResult?)
+
+local function pruneAcceptedShots(player: Player, now: number)
+	local byShot = acceptedShotsByPlayer[player]
+	if not byShot then
+		return
+	end
+
+	for existingShotId, acceptedAt in pairs(byShot) do
+		if now - acceptedAt > ACCEPTED_SHOT_TTL then
+			byShot[existingShotId] = nil
+		end
+	end
+end
+
+local function markAcceptedShot(player: Player, shotId: string?)
+	if not shotId then
+		return
+	end
+	local now = os.clock()
+	acceptedShotsByPlayer[player] = acceptedShotsByPlayer[player] or {}
+	acceptedShotsByPlayer[player][shotId] = now
+
+	local nextPruneAt = acceptedShotPruneAtByPlayer[player] or 0
+	if now >= nextPruneAt then
+		pruneAcceptedShots(player, now)
+		acceptedShotPruneAtByPlayer[player] = now + ACCEPTED_SHOT_PRUNE_INTERVAL
+	end
+end
+
+local function hasAcceptedShot(player: Player, shotId: string?): boolean
+	if not shotId then
+		return false
+	end
+	local byShot = acceptedShotsByPlayer[player]
+	if not byShot then
+		return false
+	end
+	local acceptedAt = byShot[shotId]
+	if type(acceptedAt) ~= "number" then
+		return false
+	end
+	if os.clock() - acceptedAt > ACCEPTED_SHOT_TTL then
+		byShot[shotId] = nil
+		return false
+	end
+	return true
+end
+local function validateClaimedHit(
+	player: Player,
+	payload: any,
+	char: Model,
+	hrp: BasePart,
+	weaponId: string,
+	weaponCfg: any,
+	enforceCadence: boolean?
+): (boolean, string?, Vector3?, Vector3?, Vector3?, RaycastResult?)
 	local fire = weaponCfg.fire or {}
 	local netCfg = weaponCfg.net or {}
-	local rpm = tonumber(fire.rpm) or 420
-	if not canShoot(player, weaponId, rpm, netCfg.rofTolerance) then
-		return false, "cadence_rpm"
+	if enforceCadence ~= false then
+		local rpm = tonumber(fire.rpm) or 420
+		if not canShoot(player, weaponId, rpm, netCfg.rofTolerance) then
+			return false, "cadence_rpm"
+		end
 	end
 
 	local range = tonumber(weaponCfg.hitscan and weaponCfg.hitscan.range) or 800
-	local originMax = tonumber(netCfg.originMaxOffsetFromHead) or 20
+	local originMax = tonumber(netCfg.originMaxOffsetFromHead) or tonumber(netCfg.maxOriginOffsetFromHead) or tonumber(netCfg.originOffsetTolerance) or 20
 	local origin = sanitizeOrigin(payload.origin, char, hrp, originMax)
 	if not origin then
 		return false, "origin_invalid", nil, nil, nil, nil
 	end
 
-	local muzzle = findMuzzle(char, weaponCfg)
+	local muzzle = nil :: Attachment?
+	local _muzzleSource = "missing"
+	muzzle, _muzzleSource = findMuzzle(char, weaponCfg)
 	local muzzlePos = muzzle and muzzle.WorldPosition or hrp.Position
-	local muzzleMaxOffset = tonumber(netCfg.muzzleMaxOffset) or 14
-	if (origin - muzzlePos).Magnitude > muzzleMaxOffset then
+	local muzzleMaxOffset = math.max(
+		tonumber(netCfg.muzzleMaxOffset) or 14,
+		tonumber(netCfg.originOffsetTolerance) or 0
+	)
+	local originMuzzleDist = (origin - muzzlePos).Magnitude
+	local effectiveOriginMuzzleDist = originMuzzleDist
+	local clientMuzzleDist: number? = nil
+	local clientMuzzlePos: Vector3? = nil
+
+	if typeof(payload.muzzlePos) == "Vector3" then
+		local candidate = payload.muzzlePos
+		local head = char:FindFirstChild("Head") :: BasePart?
+		local ref = (head and head.Position) or hrp.Position
+		local maxClientMuzzleFromHead = originMax + 8
+		local distFromHead = (candidate - ref).Magnitude
+		if distFromHead <= maxClientMuzzleFromHead then
+			clientMuzzlePos = candidate
+			clientMuzzleDist = (origin - candidate).Magnitude
+			effectiveOriginMuzzleDist = math.min(effectiveOriginMuzzleDist, clientMuzzleDist)
+		else
+			log:warn(string.format(
+				"Client muzzlePos ignored (too far from body) dist=%.3f max=%.3f shotId=%s",
+				distFromHead,
+				maxClientMuzzleFromHead,
+				tostring(getShotId(payload))
+			))
+		end
+	end
+
+	log:trace(string.format(
+		"Origin vs muzzle distance validated -> serverDist=%.3f clientDist=%s effective=%.3f max=%.3f shotId=%s",
+		originMuzzleDist,
+		if clientMuzzleDist then string.format("%.3f", clientMuzzleDist) else "n/a",
+		effectiveOriginMuzzleDist,
+		muzzleMaxOffset,
+		tostring(getShotId(payload))
+	))
+	if clientMuzzlePos then
+		log:trace("Client muzzlePos payload = " .. tostring(clientMuzzlePos))
+	end
+	if effectiveOriginMuzzleDist > muzzleMaxOffset then
 		return false, "origin_muzzle_offset", nil, nil, nil, nil
 	end
 
@@ -354,8 +493,20 @@ local function processShoot(player: Player, payload: any)
 		return
 	end
 
-	local muzzle = findMuzzle(char, weaponCfg)
+	local muzzle, muzzleSource = findMuzzle(char, weaponCfg)
 	local muzzlePos = muzzle and muzzle.WorldPosition or hrp.Position
+	if muzzle then
+		log:trace("Muzzle found on server source=" .. tostring(muzzleSource))
+	else
+		log:warn("Muzzle not found on server; using HRP fallback for validation source=" .. tostring(muzzleSource))
+	end
+	log:trace("Muzzle world position (server) = " .. tostring(muzzlePos))
+	if typeof(payload.cameraOrigin) == "Vector3" then
+		log:trace("Camera origin (client payload) = " .. tostring(payload.cameraOrigin))
+	end
+	if typeof(payload.aimPoint) == "Vector3" then
+		log:trace("Aim point (client payload) = " .. tostring(payload.aimPoint))
+	end
 
 	local netCfg = weaponCfg.net or {}
 	log:trace("Shoot validation: cadence/state/plausibility started")
@@ -367,7 +518,7 @@ local function processShoot(player: Player, payload: any)
 		local fallbackOrigin = hrp.Position
 		local fallbackDir = Vector3.new(0, 0, -1)
 		if typeof(payload.origin) == "Vector3" then
-			local originMax = tonumber(netCfg.originMaxOffsetFromHead) or 20
+			local originMax = tonumber(netCfg.originMaxOffsetFromHead) or tonumber(netCfg.maxOriginOffsetFromHead) or tonumber(netCfg.originOffsetTolerance) or 20
 			local sanitized = sanitizeOrigin(payload.origin, char, hrp, originMax)
 			if sanitized then
 				fallbackOrigin = sanitized
@@ -399,6 +550,10 @@ local function processShoot(player: Player, payload: any)
 		return
 	end
 	log:info(string.format("Shoot validation passed shotId=%s", tostring(shotId)))
+	log:trace("Validated shot origin = " .. tostring(origin))
+	log:trace("Validated shot direction = " .. tostring(dir))
+	markAcceptedShot(player, shotId)
+	log:trace(string.format("Accepted shot registered shotId=%s", tostring(shotId)))
 
 	-- gastar bala (server-authoritative)
 	st.mag -= 1
@@ -523,12 +678,23 @@ Net.ReportHit.OnServerEvent:Connect(function(player: Player, payload: any)
 		return
 	end
 
+	if not shotId then
+		log:warn("ReportHit ignored: missing shotId")
+		return
+	end
+
+	if not hasAcceptedShot(player, shotId) then
+		log:warn(string.format("ReportHit rejected: no accepted shoot request for shotId=%s", tostring(shotId)))
+		logRejection(player, "report_without_shoot", payload)
+		return
+	end
+
 	if hasProcessedDamageShot(player, shotId) then
 		log:trace(string.format("ReportHit ignored: shot already processed shotId=%s", tostring(shotId)))
 		return
 	end
 
-	local ok, reason, _, _, _, validatedResult = validateClaimedHit(player, payload, char, hrp, weaponId, weaponCfg)
+	local ok, reason, _, _, _, validatedResult = validateClaimedHit(player, payload, char, hrp, weaponId, weaponCfg, false)
 	if not ok then
 		log:warn(string.format("ReportHit validation failed reason=%s shotId=%s", tostring(reason), tostring(shotId)))
 		logRejection(player, reason or "validation_unknown", payload)
@@ -554,7 +720,7 @@ Net.ReportHit.OnServerEvent:Connect(function(player: Player, payload: any)
 		return
 	end
 
-	local muzzle = findMuzzle(char, weaponCfg)
+	local muzzle, _muzzleSource = findMuzzle(char, weaponCfg)
 	local muzzlePos = muzzle and muzzle.WorldPosition or hrp.Position
 	local baseDamage = tonumber(weaponCfg.hitscan and weaponCfg.hitscan.damage) or 0
 	local dist = (validatedResult.Position - muzzlePos).Magnitude
@@ -742,6 +908,8 @@ Players.PlayerRemoving:Connect(function(player)
 	ammoByPlayer[player] = nil
 	ammoHandshakeByPlayer[player] = nil
 	processedDamageShotByPlayer[player] = nil
+	acceptedShotsByPlayer[player] = nil
+	acceptedShotPruneAtByPlayer[player] = nil
 end)
 
 log:info("CombatService active (shoot tracing enabled)")

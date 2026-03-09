@@ -98,6 +98,83 @@ local function getAimRay()
 	return ray.Origin, ray.Direction
 end
 
+local function findMuzzleAttachment(character: Model, weaponCfg: any): (Attachment?, string)
+	local mount = weaponCfg.mount or {}
+	local gunName = tostring(mount.gunModelName or "SoldierGun")
+	local muzzleName = tostring(mount.muzzleAttachmentName or "Muzzle")
+
+	local namedInGun: Attachment? = nil
+	local namedFallback: Attachment? = nil
+	local genericInGun: Attachment? = nil
+	local genericFallback: Attachment? = nil
+
+	for _, inst in ipairs(character:GetDescendants()) do
+		if inst:IsA("Attachment") then
+			local attachmentName = inst.Name
+			local attachmentNameLower = string.lower(attachmentName)
+			local inConfiguredGun = inst:FindFirstAncestor(gunName) ~= nil
+
+			if attachmentName == muzzleName then
+				if inConfiguredGun then
+					namedInGun = namedInGun or inst
+				else
+					namedFallback = namedFallback or inst
+				end
+			end
+
+			if attachmentNameLower == "muzzle" or attachmentNameLower == "muzzleattachment" or attachmentNameLower == "muzzlepoint" then
+				if inConfiguredGun then
+					genericInGun = genericInGun or inst
+				else
+					genericFallback = genericFallback or inst
+				end
+			end
+		end
+	end
+
+	if namedInGun then
+		return namedInGun, "named_in_gun"
+	end
+	if genericInGun then
+		return genericInGun, "generic_in_gun"
+	end
+	if namedFallback then
+		return namedFallback, "named_fallback"
+	end
+	if genericFallback then
+		return genericFallback, "generic_fallback"
+	end
+
+	return nil, "missing"
+end
+
+local function getCharacterOriginFallback(character: Model?, cameraOrigin: Vector3): Vector3
+	if character then
+		local head = character:FindFirstChild("Head")
+		if head and head:IsA("BasePart") then
+			return head.Position
+		end
+		local hrp = character:FindFirstChild("HumanoidRootPart")
+		if hrp and hrp:IsA("BasePart") then
+			return hrp.Position
+		end
+	end
+	return cameraOrigin
+end
+
+local function getAimPoint(cameraOrigin: Vector3, cameraDir: Vector3, range: number): Vector3
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.IgnoreWater = true
+	local char = player.Character
+	params.FilterDescendantsInstances = char and {char} or {}
+	local hit = workspace:Raycast(cameraOrigin, cameraDir * range, params)
+	if hit then
+		return hit.Position
+	end
+	return cameraOrigin + cameraDir * range
+end
+
 local function getSpreadAngleDeg(weaponCfg): number
 	local netCfg = weaponCfg.net
 	if type(netCfg) == "table" and typeof(netCfg.maxConeAngle) == "number" then
@@ -168,15 +245,40 @@ local function tryShoot(): "ok" | "blocked_uninitialized" | "blocked_reload" | "
 		log:warn("Shoot blocked: aim ray unavailable (no camera)")
 		return "no_camera"
 	end
+	local cameraOrigin = origin
+	local cameraDir = dir.Unit
 	log:trace("Aim direction calculated")
 
-	local spreadAngle = getSpreadAngleDeg(weaponCfg)
-	local spreadDir = applySpread(dir, spreadAngle)
-	log:trace(string.format("Spread applied (deg=%.2f)", spreadAngle))
-
 	local range = tonumber(weaponCfg.hitscan and weaponCfg.hitscan.range) or 2000
-	local shotResult = castShot(origin, spreadDir, range)
-	local hitPos = if shotResult then shotResult.Position else origin + spreadDir * range
+	local aimPoint = getAimPoint(cameraOrigin, cameraDir, range)
+
+	local char = player.Character
+	local muzzle: Attachment?
+	local muzzleSource = "missing"
+	if char then
+		muzzle, muzzleSource = findMuzzleAttachment(char, weaponCfg)
+	end
+	if muzzle then
+		log:trace("Muzzle found source=" .. tostring(muzzleSource))
+		log:trace("Muzzle world position = " .. tostring(muzzle.WorldPosition))
+	else
+		log:warn("Muzzle not found; using fallback origin source=" .. tostring(muzzleSource))
+	end
+	log:trace("Camera origin = " .. tostring(cameraOrigin))
+	log:trace("Aim point = " .. tostring(aimPoint))
+
+	local shotOrigin = if muzzle then muzzle.WorldPosition else getCharacterOriginFallback(char, cameraOrigin)
+	local toAim = aimPoint - shotOrigin
+	local baseDir = if toAim.Magnitude > 0.001 then toAim.Unit else cameraDir
+
+	local spreadAngle = getSpreadAngleDeg(weaponCfg)
+	local spreadDir = applySpread(baseDir, spreadAngle)
+	log:trace(string.format("Spread applied (deg=%.2f)", spreadAngle))
+	log:trace("Shot origin final = " .. tostring(shotOrigin))
+	log:trace("Shot direction final = " .. tostring(spreadDir))
+
+	local shotResult = castShot(shotOrigin, spreadDir, range)
+	local hitPos = if shotResult then shotResult.Position else shotOrigin + spreadDir * range
 	local clientShotTime = os.clock()
 
 	localAmmo.mag -= 1
@@ -195,8 +297,8 @@ local function tryShoot(): "ok" | "blocked_uninitialized" | "blocked_reload" | "
 		shotSeq = shotSequence,
 		shotId = shotId,
 		clientShotTime = clientShotTime,
-		startPos = origin,
-		origin = origin,
+		startPos = shotOrigin,
+		origin = shotOrigin,
 		direction = spreadDir,
 		hitPos = hitPos,
 		hitNormal = shotResult and shotResult.Normal or nil,
@@ -209,25 +311,34 @@ local function tryShoot(): "ok" | "blocked_uninitialized" | "blocked_reload" | "
 		weaponId = localAmmo.weaponId,
 		shotId = shotId,
 		clientShotTime = clientShotTime,
-		origin = origin,
+		origin = shotOrigin,
 		direction = spreadDir,
 		claimedHitPart = shotResult and shotResult.Instance.Name or nil,
 		claimedHitPosition = shotResult and shotResult.Position or nil,
+		muzzlePos = muzzle and muzzle.WorldPosition or nil,
+		cameraOrigin = cameraOrigin,
+		aimPoint = aimPoint,
 	})
 	log:info("Shoot request sent to server shotId=" .. shotId)
 
-	Net.ReportHit:FireServer({
-		shotSeq = shotSequence,
-		shotId = shotId,
-		clientShotTime = clientShotTime,
-		weaponId = localAmmo.weaponId,
-		origin = origin,
-		dir = spreadDir,
-		hitInstance = shotResult and shotResult.Instance or nil,
-		hitPos = shotResult and shotResult.Position or nil,
-		hitNormal = shotResult and shotResult.Normal or nil,
-	})
-	log:trace("ReportHit sent shotId=" .. shotId)
+	if shotResult and shotResult.Instance then
+		Net.ReportHit:FireServer({
+			shotSeq = shotSequence,
+			shotId = shotId,
+			clientShotTime = clientShotTime,
+			weaponId = localAmmo.weaponId,
+			origin = shotOrigin,
+			dir = spreadDir,
+			hitInstance = shotResult.Instance,
+			hitPos = shotResult.Position,
+			hitNormal = shotResult.Normal,
+			cameraOrigin = cameraOrigin,
+			aimPoint = aimPoint,
+		})
+		log:trace("ReportHit sent shotId=" .. shotId)
+	else
+		log:trace("ReportHit skipped: client cast miss")
+	end
 
 	if shotResult then
 		log:trace("Client cast result: hit")

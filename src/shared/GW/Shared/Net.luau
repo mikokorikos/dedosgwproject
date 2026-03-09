@@ -11,6 +11,9 @@ export type CombatRequestPayload = {
 	clientShotTime: number?,
 	origin: Vector3?,
 	direction: Vector3?,
+	muzzlePos: Vector3?,
+	cameraOrigin: Vector3?,
+	aimPoint: Vector3?,
 	claimedHitPart: string?,
 	claimedHitPosition: Vector3?,
 }

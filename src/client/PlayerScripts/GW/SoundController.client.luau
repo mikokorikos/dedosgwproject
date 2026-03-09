@@ -9,6 +9,9 @@ local Net = require(RS.GW.Shared.Net)
 local Weapons = require(RS.GW.Shared.WeaponRegistry)
 local AssetResolver = require(RS.GW.Shared.AssetResolver)
 local LocalEffectsBus = require(script.Parent.LocalEffectsBus)
+local Logger = require(RS.GW.Shared.Logger)
+
+local log = Logger.scoped("Combat")
 
 local SoundsRoot = RS.GW.Assets:WaitForChild("Sounds")
 
@@ -63,20 +66,27 @@ end
 local function playShotSoundAt(pos: Vector3, weaponId: string, volume: number)
 	local cfg = Weapons.Get(weaponId)
 	local path = cfg.sfx and cfg.sfx.shotPath
-	if typeof(path) ~= "string" then return end
+	if typeof(path) ~= "string" then
+		log:warn("Shot sound skipped: missing sfx.shotPath for weaponId=" .. tostring(weaponId))
+		return
+	end
 
 	local template = AssetResolver.resolve(SoundsRoot, path)
 	if not (template and template:IsA("Sound")) then
+		log:warn("Shot sound template not found path=" .. tostring(path))
 		warn("[SoundController] Missing shot sound path:", path)
 		return
 	end
 	if template.SoundId == "" or template.SoundId == "rbxassetid://0" then
+		log:warn("Shot sound template has invalid SoundId path=" .. tostring(path))
 		return
 	end
 
 	local a = makeAnchor(pos)
 	local s = template:Clone()
 	s.Parent = a
+	log:trace("Shot sound source position = " .. tostring(pos))
+	log:trace("Shot sound parent = " .. tostring(s.Parent and s.Parent:GetFullName()))
 	configure3D(s, volume)
 	s:Play()
 
@@ -90,12 +100,16 @@ end
 local function onShotEvent(ev: any, localVolume: number, remoteVolume: number)
 	if type(ev) ~= "table" then return end
 	local pos = resolveStartPos(ev)
-	if not pos then return end
+	if not pos then
+		log:warn("Shot sound skipped: startPos/muzzlePos/origin missing")
+		return
+	end
 
 	local shooter = ev.shooterUserId
 	local isLocalShooter = typeof(shooter) == "number" and shooter == player.UserId
 	local volume = if isLocalShooter then localVolume else remoteVolume
 	local weaponId = resolveWeaponId(ev)
+	log:trace(string.format("Shot sound event -> localShooter=%s weaponId=%s", tostring(isLocalShooter), tostring(weaponId)))
 	playShotSoundAt(pos, weaponId, volume)
 end
 
