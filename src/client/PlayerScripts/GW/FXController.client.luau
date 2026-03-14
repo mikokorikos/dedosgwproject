@@ -237,7 +237,8 @@ local function renderExplosion(ev)
 	if typeof(pos) ~= "Vector3" then return end
 	local normal = (typeof(ev.normal) == "Vector3") and ev.normal or Vector3.new(0,1,0)
 
-	local fxPath = ev.fxPath or ev.fxFolder or "RocketExplosionEmitters"
+	local fxPath = ev.fxPath or ev.fxFolder
+	if typeof(fxPath) ~= "string" or fxPath == "" then return end
 	local folder = resolveFolder(fxPath)
 	if not folder then return end
 
@@ -251,8 +252,10 @@ local function renderExplosion(ev)
 	local templates = collectEmitters(folder)
 	emitBurst(templates, att, 10)
 
-	local sp = ev.soundPath or ev.soundName or "RocketExplosionSound"
-	play3D(sp, anchor)
+	local sp = ev.soundPath or ev.soundName
+	if typeof(sp) == "string" and sp ~= "" then
+		play3D(sp, anchor)
+	end
 
 	Debris:AddItem(anchor, maxEmitterLife(folder) + 0.8)
 end
@@ -260,7 +263,7 @@ end
 Net.FXEvent.OnClientEvent:Connect(function(ev)
 	if type(ev) ~= "table" then return end
 	local t = ev.type
-	if t == "Explosion" then
+	if t == "Explosion" or t == "DeployableFX" then
 		renderExplosion(ev)
 	end
 end)

@@ -7,10 +7,17 @@ local player = Players.LocalPlayer
 local Net = require(RS.GW.Shared.Net)
 local Characters = require(RS.GW.Shared.CharacterRegistry)
 local Abilities = require(RS.GW.Shared.AbilityRegistry)
+local ClientAnimationService = require(RS.GW.Shared.ClientAnimationService)
 local Logger = require(RS.GW.Shared.Logger)
 
 local log = Logger.scoped("Ability")
 local localCooldownEnd: {[string]: number} = {}
+
+type AbilityBind = {
+	id: string,
+	key: string?,
+	animationActionKey: string?,
+}
 
 local function isTyping(): boolean
 	local typing = UIS:GetFocusedTextBox() ~= nil
@@ -29,38 +36,6 @@ local function getAimDirection(): Vector3
 	return ray.Direction.Unit
 end
 
-local function getAnimator(): Animator?
-	local char = player.Character
-	if not char then
-		log:warn("Character not found")
-		return nil
-	end
-	log:trace("Character resolved = " .. char:GetFullName())
-
-	local hum = char:FindFirstChildOfClass("Humanoid")
-	if not hum then
-		log:warn("Humanoid not found")
-		return nil
-	end
-	log:trace("Humanoid resolved = " .. hum:GetFullName())
-
-	local animator = hum:FindFirstChildOfClass("Animator")
-	if not animator then
-		log:warn("Animator not found; creating one")
-		animator = Instance.new("Animator")
-		animator.Parent = hum
-	end
-	log:trace("Animator resolved = " .. animator:GetFullName())
-	return animator
-end
-
-local function normalizeAnimationId(animationId: string): string
-	if string.match(animationId, "^%d+$") then
-		return "rbxassetid://" .. animationId
-	end
-	return animationId
-end
-
 local function fireAbility(abilityId: string, triggerSource: string)
 	local direction = getAimDirection()
 	log:info(string.format("sending request -> abilityId = %s, trigger = %s", abilityId, triggerSource))
@@ -70,93 +45,7 @@ local function fireAbility(abilityId: string, triggerSource: string)
 	})
 end
 
-local function playAnimAndFire(cfg: any, abilityId: string): boolean
-	local rawAnimId = cfg.clientAnimId
-	log:info("abilityId = " .. tostring(abilityId))
-	log:info("animationId(raw) = " .. tostring(rawAnimId))
-
-	if type(rawAnimId) ~= "string" or rawAnimId == "" then
-		log:warn("AnimationId is missing/empty -> ability will fire without local animation")
-		fireAbility(abilityId, "no_animation_id")
-		return false
-	end
-
-	local animId = normalizeAnimationId(rawAnimId)
-	log:info("animationId = " .. animId)
-
-	local animator = getAnimator()
-	if not animator then
-		log:warn("Animator unavailable -> ability will fire without local animation")
-		fireAbility(abilityId, "no_animator")
-		return false
-	end
-
-	local anim = Instance.new("Animation")
-	anim.AnimationId = animId
-	log:trace("Animation instance created")
-
-	local okLoad, trackOrErr = pcall(function()
-		return animator:LoadAnimation(anim)
-	end)
-	if not okLoad or not trackOrErr then
-		log:error("LoadAnimation failed: " .. tostring(trackOrErr))
-		fireAbility(abilityId, "load_failed")
-		return false
-	end
-
-	local track = trackOrErr
-	log:info("LoadAnimation succeeded")
-	track.Priority = Enum.AnimationPriority.Action
-
-	local okPlay, playErr = pcall(function()
-		track:Play(0.10, 1, 1.0)
-	end)
-	if not okPlay then
-		log:error("Track failed to play: " .. tostring(playErr))
-		fireAbility(abilityId, "play_failed")
-		return false
-	end
-	log:info("Track Play() succeeded")
-
-	local fired = false
-	local function fireOnce(trigger: string)
-		if fired then
-			return
-		end
-		fired = true
-		fireAbility(abilityId, trigger)
-	end
-
-	if cfg.useMarker == true then
-		local marker = cfg.launchMarkerName or "Launch"
-		log:trace("Marker mode enabled; marker = " .. tostring(marker))
-
-		local okSignal, signalOrErr = pcall(function()
-			return track:GetMarkerReachedSignal(marker)
-		end)
-		if okSignal and signalOrErr then
-			log:trace("Marker signal connected")
-			signalOrErr:Connect(function()
-				log:trace("Marker reached -> firing ability request")
-				fireOnce("marker")
-			end)
-		else
-			log:warn("Marker signal unavailable: " .. tostring(signalOrErr))
-		end
-	else
-		log:trace("Marker mode disabled; fallback timer will fire request")
-	end
-
-	local fallbackDelay = tonumber(cfg.fallbackLaunchDelay) or 0.35
-	log:trace(string.format("fallbackLaunchDelay = %.2f", fallbackDelay))
-	task.delay(fallbackDelay, function()
-		fireOnce("fallback_delay")
-	end)
-
-	return true
-end
-
-local function getBinds()
+local function getBinds(): {AbilityBind}
 	local rawCharacterId = player:GetAttribute("CharacterId")
 	log:trace("CharacterId attribute = " .. tostring(rawCharacterId))
 
@@ -164,19 +53,20 @@ local function getBinds()
 	local charCfg = Characters.Get(resolvedCharacterId)
 	log:trace("CharacterId resolved = " .. tostring(charCfg.id))
 
-	local binds = charCfg.abilities or {}
+	local binds = (charCfg.abilities or {}) :: {AbilityBind}
 	if #binds == 0 then
 		log:warn("Character has no ability binds; fallback Q => BackRocket")
-		return { { id = "BackRocket", key = "Q" } }
+		return { { id = "BackRocket", key = "Q", animationActionKey = "AbilityQ" } }
 	end
 
 	for index, bind in ipairs(binds) do
-		log:trace(string.format("bind[%d] key=%s id=%s", index, tostring(bind.key), tostring(bind.id)))
+		log:trace(string.format("bind[%d] key=%s id=%s action=%s", index, tostring(bind.key), tostring(bind.id), tostring(bind.animationActionKey)))
 	end
 	return binds
 end
 
-local function tryUse(abilityId: string)
+local function tryUse(bind: AbilityBind)
+	local abilityId = bind.id
 	log:info("tryUse requested abilityId = " .. tostring(abilityId))
 
 	local cfg = Abilities.Get(abilityId)
@@ -196,8 +86,31 @@ local function tryUse(abilityId: string)
 	localCooldownEnd[abilityId] = now + cooldown
 	log:trace(string.format("local cooldown passed (next=%.2f)", localCooldownEnd[abilityId]))
 
-	local playedLocally = playAnimAndFire(cfg, abilityId)
-	log:info("local animation played = " .. tostring(playedLocally))
+	local actionKey = ClientAnimationService.resolveAbilityActionKey(bind.key, bind.animationActionKey)
+	log:info("ability action key = " .. tostring(actionKey))
+
+	local fired = false
+	local function fireOnce(trigger: string)
+		if fired then
+			return
+		end
+		fired = true
+		fireAbility(abilityId, trigger)
+	end
+
+	local playedLocally = ClientAnimationService.playActionWithTrigger(actionKey, function(triggerReason)
+		fireOnce("anim_" .. tostring(triggerReason))
+	end)
+	log:info("local action played = " .. tostring(playedLocally))
+
+	if not playedLocally then
+		fireOnce("no_animation_action")
+	end
+
+	-- Hard safety: runtime should trigger, but never allow dropped request.
+	task.delay(0.75, function()
+		fireOnce("failsafe")
+	end)
 end
 
 UIS.InputBegan:Connect(function(input, gameProcessed)
@@ -221,17 +134,11 @@ UIS.InputBegan:Connect(function(input, gameProcessed)
 
 	for _, bind in ipairs(getBinds()) do
 		local key = bind.key
-		local keyCode: Enum.KeyCode? = nil
-
-		if typeof(key) == "EnumItem" then
-			keyCode = key
-		elseif type(key) == "string" then
-			keyCode = Enum.KeyCode[key]
-		end
+		local keyCode: Enum.KeyCode? = if type(key) == "string" then Enum.KeyCode[key] else nil
 
 		if keyCode and input.KeyCode == keyCode then
 			log:info("abilityId = " .. tostring(bind.id))
-			tryUse(bind.id)
+			tryUse(bind)
 			return
 		end
 	end
@@ -241,5 +148,5 @@ UIS.InputBegan:Connect(function(input, gameProcessed)
 	end
 end)
 
-log:info("AbilityController ready (Q pipeline tracing enabled)")
-
+ClientAnimationService.ensureInitialized()
+log:info("AbilityController ready (character-driven animation actions enabled)")

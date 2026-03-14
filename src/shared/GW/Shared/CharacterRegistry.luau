@@ -6,6 +6,8 @@ local folder = GW:WaitForChild("Config"):WaitForChild("Characters")
 local Types = require(script.Parent.Types)
 local AbilityRegistry = require(script.Parent.AbilityRegistry)
 local WeaponRegistry = require(script.Parent.WeaponRegistry)
+local PlantableRegistry = require(script.Parent.PlantableRegistry)
+local AnimationProfileRegistry = require(script.Parent.AnimationProfileRegistry)
 local ConfigValidator = require(script.Parent.ConfigValidator)
 local RegistryLinker = require(script.Parent.RegistryLinker)
 type CharacterConfig = Types.CharacterConfig
@@ -55,7 +57,7 @@ end)
 
 for _, mod in ipairs(modules) do
 	local cfg = requireCharacterConfig(mod)
-	ConfigValidator.validateCharacterConfig(mod:GetFullName(), cfg, AbilityRegistry.ById, WeaponRegistry.ById)
+	ConfigValidator.validateCharacterConfig(mod:GetFullName(), cfg, AbilityRegistry.ById, WeaponRegistry.ById, AnimationProfileRegistry.ById, PlantableRegistry.ById)
 	if byId[cfg.id] ~= nil then
 		error(string.format("[CharacterRegistry] Duplicate id '%s' in module '%s'", cfg.id, mod:GetFullName()))
 	end
@@ -69,7 +71,7 @@ if next(byId) == nil then
 	error(string.format("[CharacterRegistry] No character configs were loaded from '%s'", folder:GetFullName()))
 end
 
-local linked = RegistryLinker.link(AbilityRegistry.ById, WeaponRegistry.ById, byId)
+local linked = RegistryLinker.link(AbilityRegistry.ById, WeaponRegistry.ById, byId, PlantableRegistry.ById)
 
 local function getDefaultId(): string
 	if defaultId and byId[defaultId] then
@@ -95,4 +97,5 @@ return {
 	DefaultId = getDefaultId(),
 	Get = get,
 	AbilityToCharacterIds = linked.abilityToCharacterIds,
+	PlantableToCharacterIds = linked.plantableToCharacterIds,
 }

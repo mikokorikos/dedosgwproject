@@ -1,21 +1,28 @@
 --!strict
-local Players = game:GetService("Players")
+local RS = game:GetService("ReplicatedStorage")
 
 local DamageUtil = {}
+local EntityRelations = require(RS.GW.Shared.EntityRelations)
 
 function DamageUtil.isFriendly(shooter: Player, targetHum: Humanoid, allowFriendlyFire: boolean): boolean
 	if allowFriendlyFire then return false end
-	local targetModel = targetHum.Parent
-	if not targetModel then return false end
+	return EntityRelations.areAllies(shooter, targetHum)
+end
 
-	local targetPlayer = Players:GetPlayerFromCharacter(targetModel)
-	if not targetPlayer then return false end -- NPC
+function DamageUtil.getFactionId(entity: any): string?
+	return EntityRelations.getFactionId(entity)
+end
 
-	if targetPlayer == shooter then return true end
-	if shooter.Team and targetPlayer.Team and shooter.Team == targetPlayer.Team then
-		return true
-	end
-	return false
+function DamageUtil.getTeamId(entity: any): string?
+	return EntityRelations.getTeamId(entity)
+end
+
+function DamageUtil.areAllies(a: any, b: any): boolean
+	return EntityRelations.areAllies(a, b)
+end
+
+function DamageUtil.areEnemies(a: any, b: any): boolean
+	return EntityRelations.areEnemies(a, b)
 end
 
 function DamageUtil.computeFalloff(baseDamage: number, dist: number, falloff: any?): number
@@ -32,6 +39,26 @@ function DamageUtil.computeFalloff(baseDamage: number, dist: number, falloff: an
 	local t = (dist - startD) / math.max(0.001, finishD - startD)
 	local mult = 1 + (minMult - 1) * t
 	return baseDamage * mult
+end
+
+function DamageUtil.canDamage(attacker: any, targetHum: Humanoid, allowFriendlyFire: boolean): boolean
+	return EntityRelations.canDamage(attacker, targetHum, allowFriendlyFire)
+end
+
+function DamageUtil.canTarget(attacker: any, targetHum: Humanoid, allowFriendlyFire: boolean): boolean
+	return EntityRelations.canTarget(attacker, targetHum, allowFriendlyFire)
+end
+
+function DamageUtil.canHeal(source: any, targetHum: Humanoid, allowCrossTeam: boolean): boolean
+	return EntityRelations.canHeal(source, targetHum, allowCrossTeam)
+end
+
+function DamageUtil.resolveOwnerUserId(entity: any): number?
+	return EntityRelations.resolveOwnerUserId(entity)
+end
+
+function DamageUtil.resolveSummonerUserId(entity: any): number?
+	return EntityRelations.resolveSummonerUserId(entity)
 end
 
 return DamageUtil

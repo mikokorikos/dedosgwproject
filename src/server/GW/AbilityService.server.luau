@@ -9,6 +9,7 @@ local Net = require(RS.GW.Shared.Net)
 local Abilities = require(RS.GW.Shared.AbilityRegistry)
 local DamageUtil = require(RS.GW.Shared.DamageUtil)
 local Logger = require(RS.GW.Shared.Logger)
+local DeployableAbilityRuntime = require(script.Parent.AbilityRuntimes.DeployableAbilityRuntime)
 
 local log = Logger.scoped("Ability")
 
@@ -173,7 +174,7 @@ local function explode(player: Player, cfg: any, pos: Vector3, normal: Vector3)
 				seen[hum] = true
 				local targetPlayer = Players:GetPlayerFromCharacter(model)
 				if targetPlayer == player and (cfg.selfDamage ~= true) then
-				elseif DamageUtil.isFriendly(player, hum, (cfg.friendlyFire == true)) then
+				elseif not DamageUtil.canDamage(player, hum, (cfg.friendlyFire == true)) then
 				else
 					local ref = model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("Head") or part
 					local dist = (ref.Position - pos).Magnitude
@@ -211,13 +212,6 @@ Net.AbilityRequest.OnServerEvent:Connect(function(player: Player, payload: any)
 	end
 	log:trace("ability config resolved for id = " .. tostring(cfg.id))
 
-	if type(cfg.clientAnimId) ~= "string" or cfg.clientAnimId == "" then
-		log:warn("clientAnimId missing in ability config: " .. tostring(cfg.id))
-	else
-		log:trace("clientAnimId configured = " .. tostring(cfg.clientAnimId))
-	end
-	log:trace("server-side animation playback skipped by design (client handles immediate ability animation)")
-
 	local char, hum, hrp = getAlive(player)
 	if not char or not hum or not hrp then
 		log:warn("player is not in a valid alive state")
@@ -228,6 +222,14 @@ Net.AbilityRequest.OnServerEvent:Connect(function(player: Player, payload: any)
 	local cooldownSeconds = tonumber(cfg.cooldown) or 0
 	if not cdOK(player, cfg.id, cooldownSeconds) then
 		log:trace("cooldown blocked on server")
+		return
+	end
+
+	local handledDeployable, deployableErr = DeployableAbilityRuntime.tryExecute(player, payload, cfg, hrp)
+	if handledDeployable then
+		if deployableErr then
+			log:warn(string.format("deployable spawn failed err=%s", tostring(deployableErr)))
+		end
 		return
 	end
 

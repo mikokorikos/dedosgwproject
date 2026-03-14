@@ -21,6 +21,12 @@
           "AbilityRequest": {
             "$className": "RemoteEvent"
           },
+          "PlantableRequest": {
+            "$className": "RemoteEvent"
+          },
+          "PlantableEvent": {
+            "$className": "RemoteEvent"
+          },
           "FXEvent": {
             "$className": "RemoteEvent"
           }

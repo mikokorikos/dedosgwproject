@@ -3,6 +3,7 @@ local Players = game:GetService("Players")
 local RS = game:GetService("ReplicatedStorage")
 local Debris = game:GetService("Debris")
 local Workspace = game:GetService("Workspace")
+local SoundService = game:GetService("SoundService")
 
 local player = Players.LocalPlayer
 local Net = require(RS.GW.Shared.Net)
@@ -20,6 +21,17 @@ if not worldFolder then
 	worldFolder = Instance.new("Folder")
 	worldFolder.Name = "_GW_WorldSFX"
 	worldFolder.Parent = Workspace
+end
+
+local function resolveSoundTemplate(pathOrName: string?): Sound?
+	if type(pathOrName) ~= "string" or pathOrName == "" then
+		return nil
+	end
+	local template = AssetResolver.resolve(SoundsRoot, pathOrName)
+	if template and template:IsA("Sound") then
+		return template
+	end
+	return nil
 end
 
 local function makeAnchor(pos: Vector3)
@@ -71,7 +83,7 @@ local function playShotSoundAt(pos: Vector3, weaponId: string, volume: number)
 		return
 	end
 
-	local template = AssetResolver.resolve(SoundsRoot, path)
+	local template = resolveSoundTemplate(path)
 	if not (template and template:IsA("Sound")) then
 		log:warn("Shot sound template not found path=" .. tostring(path))
 		warn("[SoundController] Missing shot sound path:", path)
@@ -95,6 +107,58 @@ local function playShotSoundAt(pos: Vector3, weaponId: string, volume: number)
 		cleanup = (s.TimeLength / math.max(s.PlaybackSpeed, 0.01)) + 0.2
 	end
 	Debris:AddItem(a, cleanup)
+end
+
+local function playCue2D(soundPath: string, volume: number?)
+	local template = resolveSoundTemplate(soundPath)
+	if not template then
+		log:warn("SoundCue 2D template not found path=" .. tostring(soundPath))
+		return
+	end
+	if template.SoundId == "" or template.SoundId == "rbxassetid://0" then
+		log:warn("SoundCue 2D invalid SoundId path=" .. tostring(soundPath))
+		return
+	end
+	local sound = template:Clone()
+	sound.Parent = SoundService
+	sound.Looped = false
+	if type(volume) == "number" and volume > 0 then
+		sound.Volume = volume
+	end
+	sound:Play()
+	local ttl = 2.5
+	if sound.TimeLength > 0 then
+		ttl = (sound.TimeLength / math.max(sound.PlaybackSpeed, 0.01)) + 0.2
+	end
+	Debris:AddItem(sound, ttl)
+end
+
+local function playCue3D(soundPath: string, position: Vector3?, volume: number?)
+	if typeof(position) ~= "Vector3" then
+		log:warn("SoundCue 3D missing position, fallback to 2D path=" .. tostring(soundPath))
+		playCue2D(soundPath, volume)
+		return
+	end
+	local template = resolveSoundTemplate(soundPath)
+	if not template then
+		log:warn("SoundCue 3D template not found path=" .. tostring(soundPath))
+		return
+	end
+	if template.SoundId == "" or template.SoundId == "rbxassetid://0" then
+		log:warn("SoundCue 3D invalid SoundId path=" .. tostring(soundPath))
+		return
+	end
+
+	local anchor = makeAnchor(position)
+	local sound = template:Clone()
+	sound.Parent = anchor
+	configure3D(sound, if type(volume) == "number" and volume > 0 then volume else 1)
+	sound:Play()
+	local ttl = 2.5
+	if sound.TimeLength > 0 then
+		ttl = (sound.TimeLength / math.max(sound.PlaybackSpeed, 0.01)) + 0.2
+	end
+	Debris:AddItem(anchor, ttl)
 end
 
 local function onShotEvent(ev: any, localVolume: number, remoteVolume: number)
@@ -126,6 +190,34 @@ Net.ReplicateShot.OnClientEvent:Connect(function(ev)
 	end
 
 	onShotEvent(ev, 0.95, 0.80)
+end)
+
+Net.FXEvent.OnClientEvent:Connect(function(ev)
+	if type(ev) ~= "table" then return end
+	if ev.type ~= "SoundCue" then return end
+
+	local soundPath = ev.soundPath
+	if type(soundPath) ~= "string" or soundPath == "" then
+		log:warn("SoundCue ignored: missing soundPath")
+		return
+	end
+
+	local mode = string.upper(tostring(ev.mode or "2D"))
+	local position = ev.position
+	local volume = tonumber(ev.volume)
+
+	if mode == "3D" then
+		playCue3D(soundPath, position, volume)
+	else
+		playCue2D(soundPath, volume)
+	end
+
+	log:trace(string.format(
+		"SoundCue played -> mode=%s path=%s context=%s",
+		mode,
+		soundPath,
+		tostring(ev.context)
+	))
 end)
 
 print("[GW] SoundController (local bus + remote) activo.")

@@ -7,6 +7,8 @@ local RunService = game:GetService("RunService")
 local player = Players.LocalPlayer
 local Net = require(RS.GW.Shared.Net)
 local Weapons = require(RS.GW.Shared.WeaponRegistry)
+local AnimationKeys = require(RS.GW.Shared.AnimationKeys)
+local ClientAnimationService = require(RS.GW.Shared.ClientAnimationService)
 local LocalEffectsBus = require(script.Parent.LocalEffectsBus)
 local Logger = require(RS.GW.Shared.Logger)
 
@@ -345,6 +347,7 @@ local function tryShoot(): "ok" | "blocked_uninitialized" | "blocked_reload" | "
 	else
 		log:trace("Client cast result: miss")
 	end
+	ClientAnimationService.playAction(AnimationKeys.Actions.Shoot)
 
 	return "ok"
 end
@@ -540,6 +543,7 @@ Net.FXEvent.OnClientEvent:Connect(function(ev)
 		localAmmo.reloading = true
 		localAmmo.reloadEnd = os.clock() + (tonumber(ev.reloadTime) or 0)
 		log:trace("ReloadStart received")
+		ClientAnimationService.playAction(AnimationKeys.Actions.Reload)
 	elseif ev.type == "ReloadEnd" then
 		localAmmo.reloading = false
 		localAmmo.reloadEnd = 0
@@ -547,5 +551,6 @@ Net.FXEvent.OnClientEvent:Connect(function(ev)
 	end
 end)
 
+ClientAnimationService.ensureInitialized()
 log:trace("Local ammo state created: " .. ammoSnapshot())
 log:info("CombatController ready (Shoot + Reload tracing enabled)")

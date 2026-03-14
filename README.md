@@ -1,33 +1,35 @@
 # GW Project
 
-Proyecto Roblox en LuaU con arquitectura modular para un shooter tipo Garden Warfare:
-- arma primaria hitscan (click)
-- habilidad de personaje (Q, actualmente `BackRocket`)
-- pipeline cliente/servidor con validacion y replicacion de FX
+Shooter modular estilo Garden Warfare en Roblox/LuaU con separacion estricta `Client / Server / Shared`.
 
-## Stack
-- Roblox Studio + LuaU
-- Rojo (`default.project.json`)
-- ReplicatedStorage para codigo compartido y `RemoteEvent`s
+Estado actual del proyecto:
+- Combate hitscan autoritativo (server-side validation + client feel inmediato).
+- Habilidades de personaje por binds configurables.
+- Sistema de animaciones character-driven por `AnimationProfiles`.
+- Deployables humanoid con runtime autonomo modular.
+- Plantables por spot en pipeline separado de abilities.
+- Reglas de faccion/equipo centralizadas en `EntityRelations` + `DamageUtil`.
 
-## Documentacion Interna
-- [Estructura del proyecto](docs/PROJECT_STRUCTURE.md)
-- [Guia de configuracion y animaciones](docs/CONFIG_GUIDE.md)
-- [Flujos runtime (combat, habilidad, ammo, FX)](docs/FLOWS.md)
+## Documentacion (manual interno)
+- [Overview](docs/OVERVIEW.md)
+- [Project Structure](docs/PROJECT_STRUCTURE.md)
+- [Systems](docs/SYSTEMS.md)
+- [Flows](docs/FLOWS.md)
+- [Remotes And Events](docs/REMOTES_AND_EVENTS.md)
+- [Config Guide](docs/CONFIG_GUIDE.md)
+- [Animation Architecture](docs/ANIMATION_ARCHITECTURE.md)
+- [Deployables And NPCs](docs/DEPLOYABLES_AND_NPCS.md)
+- [Asset Guide](docs/ASSET_GUIDE.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
-- [Guia para agentes/cambios](AGENTS.md)
+- [Extending The Game](docs/EXTENDING_THE_GAME.md)
 
-## Quick Start
-Compilar place:
+Documentos de apoyo historicos/especificos:
+- [Teams And Summons](docs/TEAMS_AND_SUMMONS.md)
+- [Deployable Legendary Implementation](docs/DEPLOYABLE_LEGENDARY_IMPLEMENTATION.md)
+- [NPC Deployables Plan](docs/NPC_DEPLOYABLES_PLAN.md)
+- [Agent Guide](AGENTS.md)
 
-```bash
-rojo build -o "gwproject.rbxlx"
-```
+## Build rapido
+`rojo build -o "gwproject.rbxlx"`
 
-Levantar servidor Rojo:
-
-```bash
-rojo serve
-```
-
-Abrir `gwproject.rbxlx` en Roblox Studio y conectar Rojo.
+`rojo serve`

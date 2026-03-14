@@ -228,6 +228,47 @@ local function logRejection(player: Player, reason: string, payload: any)
 	))
 end
 
+local function logFriendlyFireBlocked(player: Player, targetHum: Humanoid, context: string)
+	local attackerFaction = DamageUtil.getFactionId(player)
+	local targetFaction = DamageUtil.getFactionId(targetHum)
+	local attackerTeam = DamageUtil.getTeamId(player)
+	local targetTeam = DamageUtil.getTeamId(targetHum)
+	local targetModel = targetHum.Parent
+	local targetName = if targetModel then targetModel.Name else "UnknownTarget"
+	log:warn(string.format(
+		"Friendly target detected -> context=%s player=%s target=%s attackerFaction=%s attackerTeam=%s targetFaction=%s targetTeam=%s",
+		context,
+		playerLabel(player),
+		tostring(targetName),
+		tostring(attackerFaction),
+		tostring(attackerTeam),
+		tostring(targetFaction),
+		tostring(targetTeam)
+	))
+end
+
+local function logTargetRelation(player: Player, targetHum: Humanoid, context: string, allowFriendlyFire: boolean)
+	local attackerFaction = DamageUtil.getFactionId(player)
+	local targetFaction = DamageUtil.getFactionId(targetHum)
+	local attackerTeam = DamageUtil.getTeamId(player)
+	local targetTeam = DamageUtil.getTeamId(targetHum)
+	local targetModel = targetHum.Parent
+	local targetName = if targetModel then targetModel.Name else "UnknownTarget"
+	local relation = if DamageUtil.canDamage(player, targetHum, allowFriendlyFire) then "enemy_or_allowed" else "ally_blocked"
+	log:warn(string.format(
+		"Target relation -> context=%s player=%s target=%s relation=%s allowFriendlyFire=%s attackerFaction=%s attackerTeam=%s targetFaction=%s targetTeam=%s",
+		context,
+		playerLabel(player),
+		tostring(targetName),
+		relation,
+		tostring(allowFriendlyFire),
+		tostring(attackerFaction),
+		tostring(attackerTeam),
+		tostring(targetFaction),
+		tostring(targetTeam)
+	))
+end
+
 
 local function getShotId(payload: any): string?
 	if type(payload) ~= "table" then return nil end
@@ -452,7 +493,10 @@ local function validateClaimedHit(
 			if hum == char:FindFirstChildOfClass("Humanoid") then
 				return false, "target_self", nil, nil, nil, nil
 			end
-			if DamageUtil.isFriendly(player, hum, (netCfg.allowFriendlyFire == true)) then
+			local allowFriendlyFire = (netCfg.allowFriendlyFire == true)
+			logTargetRelation(player, hum, "validateClaimedHit", allowFriendlyFire)
+			if not DamageUtil.canDamage(player, hum, allowFriendlyFire) then
+				logFriendlyFireBlocked(player, hum, "validateClaimedHit")
 				return false, "target_friendly", nil, nil, nil, nil
 			end
 		end
@@ -580,7 +624,8 @@ local function processShoot(player: Player, payload: any)
 		if result and result.Instance and not hasProcessedDamageShot(player, shotId) then
 			local hum, _model = RaycastUtil.findHumanoidFromHit(result.Instance)
 			if hum and hum ~= shooterHum and hum.Health > 0 then
-				if not DamageUtil.isFriendly(player, hum, (netCfg.allowFriendlyFire == true)) then
+				local canDamageTarget = DamageUtil.canDamage(player, hum, (netCfg.allowFriendlyFire == true))
+				if canDamageTarget then
 					local baseDamage = tonumber(weaponCfg.hitscan and weaponCfg.hitscan.damage) or 0
 					local dist = (hitPos - muzzlePos).Magnitude
 					local dmg = DamageUtil.computeFalloff(baseDamage, dist, weaponCfg.hitscan and weaponCfg.hitscan.falloff)
@@ -605,6 +650,9 @@ local function processShoot(player: Player, payload: any)
 							end
 						end
 					end
+				end
+				if not canDamageTarget then
+					logFriendlyFireBlocked(player, hum, "processShoot")
 				end
 			end
 		end
@@ -714,7 +762,10 @@ Net.ReportHit.OnServerEvent:Connect(function(player: Player, payload: any)
 		return
 	end
 
-	if DamageUtil.isFriendly(player, hum, (netCfg.allowFriendlyFire == true)) then
+	local allowFriendlyFire = (netCfg.allowFriendlyFire == true)
+	logTargetRelation(player, hum, "reportHit", allowFriendlyFire)
+	if not DamageUtil.canDamage(player, hum, allowFriendlyFire) then
+		logFriendlyFireBlocked(player, hum, "reportHit")
 		log:warn(string.format("ReportHit target rejected friendly shotId=%s", tostring(shotId)))
 		logRejection(player, "target_friendly", payload)
 		return

@@ -1,113 +1,104 @@
 # AGENTS
 
+Guia operativa para agentes/cambios en este repo.
+
 ## 1) Proyecto
 - Tipo: shooter modular estilo Garden Warfare.
 - Stack: Roblox + LuaU + Rojo.
 - Arquitectura: separacion estricta `Client / Server / Shared`.
-- Enfoque actual:
-  - arma principal hitscan
-  - habilidad `BackRocket`
-  - validaciones server-side con feedback inmediato local
+- Sistemas activos:
+  - combate hitscan autoritativo
+  - habilidades por personaje
+  - animaciones character-driven por profile
+  - deployables/summons
+  - plantables por spot (pipeline separado)
+  - runtime autonomo base para entidades/NPCs
 
 ## 2) Reglas de trabajo
-1. No mover archivos/carpeta sin motivo tecnico claro.
-2. No romper separacion:
-   - `src/client`: input, UI, FX/SFX, animacion local
-   - `src/server`: autoridad de gameplay y validaciones
-   - `src/shared`: config, tipos, registries, utilidades, net
-3. No hardcodear valores repetidos en varios scripts.
-4. Centralizar config en `src/shared/GW/Config`.
-5. Preferir cambios minimos, compatibles y reversibles.
-6. Primero identificar causa raiz; despues refactorizar.
-7. Agregar logs antes de asumir causas.
-8. Evitar require circular entre registries/services.
-9. Evitar returns silenciosos en pipelines criticos; loguear razon antes de retornar.
-10. Conservar compatibilidad cliente/servidor.
+1. No mover carpetas/archivos sin motivo tecnico claro.
+2. No romper separacion `Client / Server / Shared`.
+3. No hardcodear valores repetidos en multiples scripts.
+4. Centralizar tunables en `src/shared/GW/Config`.
+5. Primero causa raiz, luego refactor.
+6. Agregar logs antes de adivinar.
+7. Evitar require circular entre registries/services.
+8. Evitar returns silenciosos en pipelines criticos.
+9. Mantener compatibilidad cliente/servidor.
+10. No duplicar reglas de equipo/faccion fuera de `EntityRelations`/`DamageUtil`.
+11. Plantables por spot NO van en `AbilityService`.
+12. Comportamiento autonomo debe pasar por `AutonomousEntityService`.
+13. No meter animaciones hardcodeadas en abilities/runtime de gameplay.
+14. Resolver animaciones por profile (`AnimationProfiles`) + action keys.
 
-## 3) Convenciones
+## 3) Fuente de verdad por dominio
+- Relaciones/equipos/facciones: `src/shared/GW/Shared/EntityRelations.luau`
+- Dano/target/heal: `src/shared/GW/Shared/DamageUtil.luau`
+- Target acquisition reusable: `src/shared/GW/Shared/TargetingUtil.luau`
+- Spot contract: `src/shared/GW/Shared/PlantSpotUtil.luau`
+- Runtime autonomo: `src/server/GW/AutonomousEntityService.luau`
+- Spawn/effects deployables: `src/server/GW/DeployableService.luau`
+- Pipeline plantables: `src/server/GW/PlantableService.server.luau`
+- Profiles animacion: `src/shared/GW/Config/AnimationProfiles/*`
+- Runtime animacion cliente: `src/shared/GW/Shared/ClientAnimationService.luau`
+- Runtime animacion servidor: `src/server/GW/ServerAnimationService.luau`
 
+## 4) Convenciones
 ### Naming
-- IDs de config estables y legibles: `SoldierRifle`, `BackRocket`, `Soldier`.
-- Archivos de config por ID: `Config/<Domain>/<Id>.luau`.
-- Scripts cliente: `*.client.luau`
-- Scripts servidor: `*.server.luau`
+- IDs estables: `SoldierRifle`, `BackRocket`, `PlantZombieExploder`, `PlantZombieSpotExploder`.
+- Config por ID: `Config/<Domain>/<Id>.luau`.
+- Cliente: `*.client.luau`.
+- Servidor: `*.server.luau`.
 
-### Config
-- Armas: `Config/Weapons`
-- Habilidades: `Config/Abilities`
-- Personajes: `Config/Characters`
-- Tipos y validaciones: `Shared/Types.luau` + `Shared/ConfigValidator.luau`
-
-### Assets
-- Runtime espera assets en `ReplicatedStorage.GW.Assets`.
-- Si se agregan rutas nuevas de assets, reflejarlas en config (`fx.*`, `sfx.*`) y consumidores.
+### Config domains
+- `Weapons`: combate arma principal
+- `Abilities`: gameplay de habilidades (sin AnimationId)
+- `Characters`: binds/loadout/profile
+- `AnimationProfiles`: locomotion + actions + trigger
+- `Deployables`: runtime de entidades invocadas
+- `Plantables`: colocacion por spot
 
 ### Logging
 - Usar `Logger.scoped("<System>")`.
-- Formato esperado:
-  - `[GW][Combat][Client] ...`
-  - `[GW][Ability][Server] ...`
-- Para debug temporal:
-  - agregar logs `trace/info/warn/error` en puntos de decision
-  - remover o bajar verbosidad al cerrar incidente
+- Loguear decisiones y rechazos antes de return temprano.
+- Remover logs temporales cuando termine la depuracion intensa.
 
-### Documentacion de features
-- Si agregas/ajustas gameplay, actualizar:
-  - `docs/PROJECT_STRUCTURE.md` (responsabilidades/rutas)
-  - `docs/FLOWS.md` (pipeline runtime)
-  - `docs/CONFIG_GUIDE.md` (nuevos campos de config)
-  - `docs/TROUBLESHOOTING.md` (fallas conocidas)
+## 5) Checklist por tipo de cambio
+### Nuevo deployable/NPC invocado
+1. Crear `Config/Deployables/<Id>.luau`.
+2. Validar contra `ConfigValidator`.
+3. Integrar `kind` en `DeployableService.runPrototype`.
+4. Reusar `TargetingUtil` + `DamageUtil`.
+5. Verificar herencia owner/faccion/team.
+6. Documentar en `CONFIG_GUIDE`, `DEPLOYABLES_AND_NPCS`, `FLOWS`.
 
-## 4) Checklist por tipo de cambio
+### Nuevo plantable por spot
+1. Crear `Config/Plantables/<Id>.luau`.
+2. Bind en `Config/Characters/<Id>.luau` (`plantables`).
+3. Validar `spotType`, cooldown, `maxActive`.
+4. Probar ocupacion/liberacion del spot.
+5. Actualizar docs relevantes.
 
-### Nueva arma
-1. Crear `Config/Weapons/<WeaponId>.luau`.
-2. Validar campos con `ConfigValidator`.
-3. Asignar arma en `Config/Characters/<CharacterId>.luau`.
-4. Verificar impacto en `CombatController` y `CombatService`.
-5. Configurar rutas FX/SFX y assets reales.
-6. Actualizar docs.
+### Cambio de animaciones
+1. Editar profile en `Config/AnimationProfiles/*`.
+2. Referenciar profile en character/deployable.
+3. Mapear `animationActionKey` en slot de character cuando aplique.
+4. No tocar ability config para cambiar AnimationId.
+5. Actualizar `ANIMATION_ARCHITECTURE.md` y `CONFIG_GUIDE.md`.
 
-### Nueva habilidad
-1. Crear `Config/Abilities/<AbilityId>.luau`.
-2. Bindear en `Config/Characters/<CharacterId>.luau`.
-3. Implementar ejecucion en `AbilityService` (o modulo dedicado).
-4. Definir `clientAnimId` y timing (marker/fallback).
-5. Verificar cooldown local + server.
-6. Actualizar docs.
+### Cambios de networking
+1. Documentar payload y validaciones server-side.
+2. Mantener compatibilidad de eventos activos.
+3. Loguear razon de rechazo en servidor.
 
-### Cambio de sonido/VFX
-1. Ajustar ruta en config.
-2. Confirmar consumidor (`FXController`/`SoundController`/`CombatUIController`).
-3. Probar local y remoto.
-4. Documentar origen espacial del sonido (muzzle/impact/explosion).
+## 6) Zonas sensibles
+- `src/server/GW/CombatService.server.luau`
+- `src/server/GW/AbilityService.server.luau`
+- `src/server/GW/DeployableService.luau`
+- `src/server/GW/PlantableService.server.luau`
+- `src/shared/GW/Shared/EntityRelations.luau`
+- `src/shared/GW/Shared/Logger.luau`
 
-### Cambio de networking/validaciones
-1. Documentar origen de datos (cliente vs servidor).
-2. Mantener validaciones server-side.
-3. Registrar razon exacta de rechazos.
-4. Evitar abrir exploit al aumentar tolerancias.
-5. Actualizar `docs/FLOWS.md` y `docs/CONFIG_GUIDE.md`.
-
-## 5) Zonas sensibles
-- `CombatService.server.luau`:
-  - cadencia, origen/muzzle, LoS, recast, damage
-  - no introducir bypass de validacion
-- `CombatController.client.luau`:
-  - estado local de ammo y sync
-  - origen/direccion de disparo
-- `AbilityService.server.luau`:
-  - cooldown server y ejecucion autoritativa
-- `Logger.luau`:
-  - nunca debe romper carga de modulos
-
-## 6) Stubs y deuda tecnica actual
-- `ProjectileService.server.luau`: stub.
-- `StatusService.server.luau`: stub.
-- `Animate.luau`: IDs hardcodeados (deuda para migrar a config central).
-- `CombatUIController`: inconsistencia de keys de sonido vs `WeaponConfig`.
-
-Cuando se toque una deuda:
-1. Documentar estado previo.
-2. Hacer cambio incremental.
-3. Verificar compatibilidad y actualizar docs.
+## 7) Deuda tecnica conocida
+- Pathfinding avanzado / stuck recovery NPC: pendiente.
+- `StatusService` y `ProjectileService`: stubs.
+- Assets `ReplicatedStorage.GW.Assets` no versionados en `src`.
